@@ -11,7 +11,7 @@ from app import db
 from app.services import executions, model_catalog, providers
 
 
-async def fake_complete(model, messages):
+async def fake_complete(model, messages, session_id=""):
     mid = model["id"]
     yield {"text": f"hello from {mid} "}
     yield {"tool": {"id": "c1", "name": "fs_write",
@@ -20,7 +20,7 @@ async def fake_complete(model, messages):
     yield {"text": "done"}
 
 
-async def fake_complete_slow(model, messages):
+async def fake_complete_slow(model, messages, session_id=""):
     yield {"text": "slow start "}
     for _ in range(20):
         await asyncio.sleep(0.1)

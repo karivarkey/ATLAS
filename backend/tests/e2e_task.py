@@ -1,4 +1,4 @@
-"""Real task E2E with the fast local model.
+"""Real task E2E with the server default model.
 
 Task: write hello.py containing exactly print("HELLO-ATLAS") on one line,
 then run `python hello.py` and report the output. PASS requires exit=0
@@ -9,7 +9,21 @@ import time
 import urllib.request
 
 B = "http://127.0.0.1:8765"
-MODEL = "ollama/qwen3:0.6b"
+
+
+def _req_noerr(method, path, body=None):
+    r = urllib.request.Request(
+        B + path,
+        data=json.dumps(body or {}).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    return json.loads(urllib.request.urlopen(r, timeout=60).read())
+
+
+# Always follow the server default (no hardcoded model).
+MODEL = _req_noerr("GET", "/api/v1/config")["default_model"]
+print("using model:", MODEL)
 
 
 def req(method, path, body=None):

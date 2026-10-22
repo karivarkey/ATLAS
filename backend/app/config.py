@@ -46,7 +46,7 @@ OPENCODE_GO_MODELS_URL = f"{OPENCODE_GO_BASE}/models"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434").rstrip("/")
 
-DEFAULT_MODEL = os.environ.get("ATLAS_DEFAULT_MODEL", "ollama/qwen3:0.6b")
+DEFAULT_MODEL = os.environ.get("ATLAS_DEFAULT_MODEL", "opencode-go/glm-5.3-flash")
 CATALOG_TTL_SECONDS = int(os.environ.get("ATLAS_CATALOG_TTL", "3600"))
 CATALOG_TIMEOUT_SECONDS = float(os.environ.get("ATLAS_CATALOG_TIMEOUT", "20"))
 

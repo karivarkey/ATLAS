@@ -112,38 +112,17 @@ async def _fetch_live() -> list[dict]:
     return normalize(data)
 
 
-async def _fetch_ollama() -> list[dict]:
-    try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(f"{config.OLLAMA_BASE}/api/tags")
-            resp.raise_for_status()
-            data = resp.json()
-        models = []
-        for m in data.get("models", []):
-            name = m.get("name", "")
-            if name:
-                models.append(
-                    {
-                        "id": f"ollama/{name}",
-                        "name": name,
-                        "provider": "ollama",
-                        "protocol": "ollama",
-                        "endpoint": f"{config.OLLAMA_BASE}/api/chat",
-                        "context_window": None,
-                        "supports_tools": True,
-                    }
-                )
-        return models
-    except Exception as exc:
-        log.info("ollama unavailable: %s", exc)
-        return []
-
-
 def key_configured() -> bool:
     return bool(config.OPENCODE_ZEN_API_KEY)
 
 
 async def get_catalog(force_refresh: bool = False) -> dict:
+    """Chat model catalog: OpenCode Go live models only.
+
+    Ollama is embeddings-only in this setup and is deliberately NOT listed
+    here (no embedding implementation yet). This catalog drives the chat
+    model picker, so every entry must be a chat-capable model.
+    """
     cached, fetched_at = _read_cache()
     ttl = int(_setting("catalog_ttl_seconds", config.CATALOG_TTL_SECONDS))
     fresh = cached and (time.time() - fetched_at) < ttl
@@ -163,22 +142,15 @@ async def get_catalog(force_refresh: bool = False) -> dict:
     else:
         error = "OPENCODE_ZEN_API_KEY is not configured"
 
-    ollama_models = await _fetch_ollama()
+    ollama_models: list[dict] = []  # reserved for future embedding support; not chat
     if live:
-        merged: dict[str, dict] = {m["id"]: m for m in live}
-        for m in ollama_models:
-            merged.setdefault(m["id"], m)
-        merged_list = sorted(merged.values(), key=lambda m: m["id"])
-        _write_cache(merged_list)  # cache the merged view, not just live
+        _write_cache(live)
         fetched_at = int(time.time())
-        return {"models": merged_list,
+        return {"models": live,
                 "fetched_at": fetched_at, "stale": False, "error": "", "source": "live"}
     if cached:
         return {"models": cached, "fetched_at": fetched_at, "stale": True,
                 "error": error, "source": "cache"}
-    if ollama_models:
-        return {"models": ollama_models, "fetched_at": int(time.time()),
-                "stale": True, "error": error or FALLBACK_NOTE, "source": "ollama"}
     return {"models": [], "fetched_at": 0, "stale": True,
             "error": error or FALLBACK_NOTE, "source": "fallback"}
 

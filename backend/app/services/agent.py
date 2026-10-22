@@ -217,7 +217,8 @@ async def run_execution(execution_id: str) -> None:
             text_delta_buf = ""
             tool_calls: list[dict] = []
             try:
-                async for chunk in providers.complete(model, messages):
+                async for chunk in providers.complete(model, messages,
+                                                         session_id=conv_id):
                     ctl = await get_control(execution_id)
                     if ctl.get("cancel"):
                         break

@@ -36,9 +36,9 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | Fake-model tool loop | `test_provider_loop.py` | file written on disk, completed |
 | Concurrency (2 chats, cancel isolation) | `test_concurrency.py` | **2 passed** |
 | Approval + pause/resume | `test_workflows.py` | **2 passed** |
-| Real task, 0.6b default model | `python tests/e2e_task.py` (`ollama/qwen3:0.6b`) | **PASS in 3 steps**: `exit=0`, `HELLO-ATLAS` |
+| Real task, live Go default | `python tests/e2e_task.py` (`opencode-go/glm-5.3-flash`) | **PASS in 3 steps**: `exit=0`, `HELLO-ATLAS` |
 | Browser E2E | `bun e2e/e2e.mjs` (Playwright/Chromium) | **8/8 passed** (boot, CRUD, picker, switch, stream, done, refresh, no errors) |
-| Live Go catalog | `python tests/check_live.py` (Hermes-sourced key) | **live, not stale, 42 models**, real ids + per-model protocols |
+| Live Go catalog | `python tests/check_live.py` (Hermes-sourced key) | **live, not stale, 36 chat models**, real ids + per-model protocols, **0 ollama entries** |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
 
 ## Honest limitations
@@ -49,10 +49,12 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
    the server: only `key_configured` is exposed to clients. If the Hermes file
    is absent and no env var is set, the app degrades to Ollama-only with an
    explicit stale-catalog error.
-2. **Default model is `ollama/qwen3:0.6b`** (local chat model, verified with a
-   real write+run task in 3 steps). Note `qwen3-embedding:0.6b` is an embedding
-   model and cannot do agent work — the similarly-named `qwen3:0.6b` is the
-   correct chat model.
+2. **Chat goes through OpenCode Go only.** Ollama is embeddings-only here
+   (`qwen3-embedding:0.6b`) and is deliberately excluded from the chat model
+   picker; no embedding implementation yet. Default chat model is
+   `opencode-go/glm-5.3-flash` ($0.15/$0.50 per 1M, ~31k req/mo on Go).
+   Every inference request sends `x-opencode-session` (stable per
+   conversation, required by Go for routing) and `User-Agent: atlas/1.0`.
    no output in 180 s) → standardized on 1.5b for live verification. 7b pulled
    and listed; usable on stronger hardware.
 3. **Small-model flailing**: 1.5b needed 50+ steps on first attempt (fixed by

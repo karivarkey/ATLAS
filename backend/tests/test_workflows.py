@@ -14,7 +14,7 @@ class StubState:
     shell_calls = 0
 
 
-async def shell_then_text(model, messages):
+async def shell_then_text(model, messages, session_id=""):
     if StubState.shell_calls == 0:
         StubState.shell_calls += 1
         yield {"tool": {"id": "s1", "name": "shell_exec",
@@ -22,7 +22,7 @@ async def shell_then_text(model, messages):
     yield {"text": "shell was approved and ran"}
 
 
-async def slow_text(model, messages):
+async def slow_text(model, messages, session_id=""):
     for i in range(30):
         await asyncio.sleep(0.1)
         yield {"text": f"t{i} "}

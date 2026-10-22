@@ -61,16 +61,25 @@ def anthropic_tools() -> list[dict]:
     ]
 
 
-def _headers() -> dict[str, str]:
-    h = {"Content-Type": "application/json"}
+USER_AGENT = "atlas/1.0"
+
+
+def _headers(session_id: str = "") -> dict[str, str]:
+    h = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
     if config.OPENCODE_ZEN_API_KEY:
         h["Authorization"] = f"Bearer {config.OPENCODE_ZEN_API_KEY}"
+    if session_id:
+        # Required by OpenCode Go for routing/prompt-cache optimization.
+        # Stable per conversation: we use the Atlas conversation id.
+        h["x-opencode-session"] = session_id
     return h
 
 
-async def _post_sse(url: str, payload: dict, timeout: float = 300) -> AsyncIterator[dict]:
+async def _post_sse(url: str, payload: dict, session_id: str = "",
+                  timeout: float = 300) -> AsyncIterator[dict]:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", url, json=payload, headers=_headers()) as resp:
+        async with client.stream("POST", url, json=payload,
+                                 headers=_headers(session_id)) as resp:
             if resp.status_code >= 400:
                 body = (await resp.aread()).decode("utf-8", errors="replace")[:2000]
                 raise RuntimeError(f"provider HTTP {resp.status_code}: {body}")
@@ -90,13 +99,14 @@ async def _post_sse(url: str, payload: dict, timeout: float = 300) -> AsyncItera
                             continue
 
 
-async def chat_completions(model: dict, messages: list[dict]) -> AsyncIterator[dict]:
+async def chat_completions(model: dict, messages: list[dict],
+                           session_id: str = "") -> AsyncIterator[dict]:
     """Yield {'text': str} and {'tool': {'id', 'name', 'arguments'}}."""
     model_id = model["id"].split("/", 1)[-1] if "/" in model["id"] else model["id"]
     payload = {"model": model_id, "messages": messages,
                "tools": openai_tools(), "stream": True}
     calls: dict[int, dict] = {}
-    async for ev in _post_sse(model["endpoint"], payload):
+    async for ev in _post_sse(model["endpoint"], payload, session_id):
         for choice in ev.get("choices", []):
             delta = choice.get("delta", {})
             if delta.get("content"):
@@ -118,11 +128,12 @@ async def chat_completions(model: dict, messages: list[dict]) -> AsyncIterator[d
                         "name": slot["name"], "arguments": args}}
 
 
-async def responses_api(model: dict, messages: list[dict]) -> AsyncIterator[dict]:
+async def responses_api(model: dict, messages: list[dict],
+                        session_id: str = "") -> AsyncIterator[dict]:
     model_id = model["id"].split("/", 1)[-1] if "/" in model["id"] else model["id"]
     text = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
     payload = {"model": model_id, "input": text, "tools": openai_tools(), "stream": True}
-    async for ev in _post_sse(model["endpoint"], payload):
+    async for ev in _post_sse(model["endpoint"], payload, session_id):
         t = ev.get("type", "")
         if t in ("response.output_text.delta",):
             yield {"text": ev.get("delta", "")}
@@ -136,7 +147,8 @@ async def responses_api(model: dict, messages: list[dict]) -> AsyncIterator[dict
     # If no tool events parsed, the agent loop treats output as text-only turn.
 
 
-async def anthropic_messages(model: dict, messages: list[dict]) -> AsyncIterator[dict]:
+async def anthropic_messages(model: dict, messages: list[dict],
+                             session_id: str = "") -> AsyncIterator[dict]:
     model_id = model["id"].split("/", 1)[-1] if "/" in model["id"] else model["id"]
     system = "\n".join(m["content"] for m in messages if m["role"] == "system")
     non_sys = [{"role": m["role"], "content": m["content"]} for m in messages
@@ -144,9 +156,8 @@ async def anthropic_messages(model: dict, messages: list[dict]) -> AsyncIterator
     payload = {"model": model_id, "max_tokens": 4096, "system": system or SYSTEM_PROMPT,
                "messages": non_sys or [{"role": "user", "content": "..."}],
                "tools": anthropic_tools(), "stream": True}
-    text_buf, tool_buf = "", ""
-    tool_name, tool_id = "", ""
-    async for ev in _post_sse(model["endpoint"], payload):
+    tool_buf, text_buf, tool_name, tool_id = "", "", "", ""
+    async for ev in _post_sse(model["endpoint"], payload, session_id):
         t = ev.get("type", "")
         if t == "content_block_delta":
             d = ev.get("delta", {})
@@ -193,17 +204,18 @@ async def ollama_chat(model: dict, messages: list[dict]) -> AsyncIterator[dict]:
                     break
 
 
-async def complete(model: dict, messages: list[dict]) -> AsyncIterator[dict]:
+async def complete(model: dict, messages: list[dict],
+                   session_id: str = "") -> AsyncIterator[dict]:
     protocol = model.get("protocol", "chat_completions")
     if protocol == "responses":
-        async for e in responses_api(model, messages):
+        async for e in responses_api(model, messages, session_id):
             yield e
     elif protocol == "messages":
-        async for e in anthropic_messages(model, messages):
+        async for e in anthropic_messages(model, messages, session_id):
             yield e
     elif protocol == "ollama":
         async for e in ollama_chat(model, messages):
             yield e
     else:
-        async for e in chat_completions(model, messages):
+        async for e in chat_completions(model, messages, session_id):
             yield e

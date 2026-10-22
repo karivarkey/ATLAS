@@ -46,8 +46,8 @@ def test_text_tool_call_fallback_parsing(tmp_db):
     assert [c["name"] for c in extract_text_tool_calls(multi)] == ["fs_write", "shell_exec"]
 
 
-def test_catalog_caches_merged_view(tmp_db, monkeypatch):
-    """Refresh must persist live+ollama merged, so later cached reads validate both."""
+def test_catalog_caches_live_view(tmp_db, monkeypatch):
+    """Refresh must persist the live Go catalog (chat models only, no ollama)."""
     import asyncio
     from app.services import model_catalog
 
@@ -56,13 +56,7 @@ def test_catalog_caches_merged_view(tmp_db, monkeypatch):
                  "protocol": "chat_completions", "endpoint": "http://x",
                  "context_window": None, "supports_tools": True}]
 
-    async def fake_ollama():
-        return [{"id": "ollama/local", "name": "local", "provider": "ollama",
-                 "protocol": "ollama", "endpoint": "http://y",
-                 "context_window": None, "supports_tools": True}]
-
     monkeypatch.setattr(model_catalog, "_fetch_live", fake_live)
-    monkeypatch.setattr(model_catalog, "_fetch_ollama", fake_ollama)
     monkeypatch.setattr(model_catalog, "key_configured", lambda: True)
 
     async def go():
@@ -70,11 +64,24 @@ def test_catalog_caches_merged_view(tmp_db, monkeypatch):
         assert first["source"] == "live"
         second = await model_catalog.get_catalog()  # cached read
         ids = [m["id"] for m in second["models"]]
-        assert "opencode-go/m1" in ids and "ollama/local" in ids
-        ok, _ = await model_catalog.validate_model("ollama/local")
+        assert ids == ["opencode-go/m1"]
+        assert not any(i.startswith("ollama/") for i in ids)
+        ok, _ = await model_catalog.validate_model("opencode-go/m1")
         assert ok
+        nok, _ = await model_catalog.validate_model("ollama/qwen3:0.6b")
+        assert not nok
 
     asyncio.run(go())
+
+
+def test_go_session_headers(tmp_db):
+    from app.services.providers import _headers
+    h = _headers(session_id="conv_abc")
+    assert h["x-opencode-session"] == "conv_abc"
+    assert h["User-Agent"] == "atlas/1.0"
+    assert "Authorization" in h  # Hermes-bridged key present in this env
+    h2 = _headers()
+    assert "x-opencode-session" not in h2
 
 
 def test_terminal_states_lock(tmp_db):

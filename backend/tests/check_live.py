@@ -21,4 +21,4 @@ print("catalog error:", (cat["error"] or "(none)")[:200])
 print("model count:", len(cat["models"]))
 for m in cat["models"][:15]:
     print(" -", m["id"], "|", m["protocol"], "|", m["endpoint"])
-print("has ollama/qwen3:0.6b:", any(m["id"] == "ollama/qwen3:0.6b" for m in cat["models"]))
+print("ollama entries:", sum(1 for m in cat["models"] if m["id"].startswith("ollama/")))
