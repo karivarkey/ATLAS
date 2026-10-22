@@ -58,6 +58,7 @@ SHELL_TIMEOUT_SECONDS = int(os.environ.get("ATLAS_SHELL_TIMEOUT", "120"))
 
 AUTO_APPROVE_WORKSPACE_WRITES = os.environ.get("ATLAS_AUTO_APPROVE", "1") == "1"
 ALLOW_NETWORK = os.environ.get("ATLAS_ALLOW_NETWORK", "1") == "1"
+SEARXNG_URL = os.environ.get("ATLAS_SEARXNG_URL", "http://localhost:8888").rstrip("/")
 
 SERVER_PASSWORD = os.environ.get("ATLAS_SERVER_PASSWORD", "")
 CORS_ORIGINS = [

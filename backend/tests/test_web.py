@@ -1,6 +1,6 @@
-"""Web tools against local fake servers: DDG-style HTML parsing, snippet
-fallback, page text extraction, network-off policy. No external network."""
+"""Web tools against local fake servers (+ live SearXNG when up)."""
 import asyncio
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -44,6 +44,53 @@ def _srv():
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, port
+
+
+class FakeSearx(BaseHTTPRequestHandler):
+    PORT = 0
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path.startswith("/search"):
+            payload = {"results": [
+                {"title": "Page One", "url": f"http://127.0.0.1:{self.PORT}/p1",
+                 "content": "snippet one"},
+                {"title": "Page Two", "url": f"http://127.0.0.1:{self.PORT}/p2",
+                 "content": "snippet two"},
+            ]}
+            raw = json.dumps(payload).encode()
+        elif self.path.startswith("/p1"):
+            raw = b"<html><body><h1>Alpha Document</h1><p>deep content alpha</p></body></html>"
+        else:
+            raw = b"<html><body><h1>Beta Document</h1><p>deep content beta</p></body></html>"
+        self.send_response(200)
+        self.send_header("Content-Type",
+                         "application/json" if self.path.startswith("/search") else "text/html")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+def test_web_research_combines_sources(tmp_path, monkeypatch):
+    import json as _json
+
+    async def main():
+        server = HTTPServer(("127.0.0.1", 0), FakeSearx)
+        port = server.server_address[1]
+        FakeSearx.PORT = port
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        monkeypatch.setattr(config, "SEARXNG_URL", f"http://127.0.0.1:{port}")
+        monkeypatch.setattr(config, "ALLOW_NETWORK", True)
+        r = await webtools.web_research("test topic", 2)
+        server.shutdown()
+        assert r["ok"], r
+        assert "SOURCE: http://127.0.0.1" in r["output"]
+        assert "deep content alpha" in r["output"]
+        assert "deep content beta" in r["output"]
+
+    asyncio.run(main())
 
 
 def test_ddg_parse_and_fetch(tmp_path, monkeypatch):

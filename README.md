@@ -11,6 +11,29 @@ start.bat
 ```
 
 Then open **http://127.0.0.1:8765** (backend serves the built frontend).
+
+## Local search engine (SearXNG, Docker)
+
+`web_search` / `web_research` use a self-hosted SearXNG (no rate limits).
+Atlas expects it at `ATLAS_SEARXNG_URL` (default `http://localhost:8888`).
+
+```sh
+docker run -d --name searxng --restart unless-stopped -p 8888:8080 -v ./searxng:/etc/searxng searxng/searxng:latest
+```
+
+with `searxng/settings.yml`:
+
+```yaml
+use_default_settings: true
+server:
+  secret_key: "<random-hex>"   # generate your own, keep it local
+  limiter: false
+search:
+  formats: [html, json]        # json is what Atlas calls
+```
+
+If SearXNG is unreachable, search transparently falls back to DuckDuckGo
+(responses are labeled `[via duckduckgo fallback]`).
 For frontend dev with hot reload:
 
 ```sh

@@ -29,9 +29,46 @@ WEB_TOOL_SCHEMAS = [
         "description": "Fetch a page URL and return its readable text (truncated).",
         "parameters": {"url": "https page url"},
     },
+    {
+        "name": "web_research",
+        "description": "Deep research: web-search a topic, then concurrently deep-fetch the top pages and return one combined digest with sources.",
+        "parameters": {"query": "research topic", "max_pages": "pages to deep-fetch, default 3 (max 5)"},
+    },
 ]
 
 _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Atlas/1.0"}
+
+
+def _searxng_base() -> str:
+    return config.SEARXNG_URL.rstrip("/")
+
+
+async def searxng_search(query: str, count: int = 5) -> dict:
+    """Primary backend: self-hosted SearXNG JSON API (no rate limits)."""
+    query = (query or "").strip()[:300]
+    if not query:
+        return {"ok": False, "output": "empty query"}
+    try:
+        async with httpx.AsyncClient(timeout=20, headers=_UA) as client:
+            resp = await client.get(
+                f"{_searxng_base()}/search",
+                params={"q": query, "format": "json", "language": "en"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        items = [
+            r for r in data.get("results", [])
+            if isinstance(r, dict) and r.get("url")
+        ][: max(1, min(count, 10))]
+        if not items:
+            return {"ok": False, "output": "no results from local search engine"}
+        lines = [f"{i + 1}. {r.get('title', '')[:200]}\n   {r['url']}\n"
+                 f"   {str(r.get('content', ''))[:300]}"
+                 for i, r in enumerate(items)]
+        return {"ok": True, "output": "\n".join(lines)}
+    except Exception as exc:
+        return {"ok": False,
+                "output": f"local search engine unreachable: {type(exc).__name__}: {exc}"[:500]}
 
 
 class _DDGParser(HTMLParser):
@@ -87,11 +124,20 @@ def _clean_ddg_url(href: str) -> str:
 
 
 async def web_search(query: str, count: int = 5) -> dict:
+    """Self-hosted SearXNG first; DuckDuckGo only as a labeled fallback."""
     if not config.ALLOW_NETWORK:
         return {"ok": False, "output": "network access is disabled (ATLAS_ALLOW_NETWORK=0)"}
-    query = (query or "").strip()[:300]
-    if not query:
-        return {"ok": False, "output": "empty query"}
+    primary = await searxng_search(query, count)
+    if primary["ok"]:
+        return primary
+    fallback = await _ddg_search(query, count)
+    if fallback["ok"]:
+        fallback["output"] = "[via duckduckgo fallback — local engine: " \
+            f"{primary['output'][:120]}]\n" + fallback["output"]
+    return fallback
+
+
+async def _ddg_search(query: str, count: int = 5) -> dict:
     try:
         async with httpx.AsyncClient(timeout=20, headers=_UA, follow_redirects=True) as client:
             resp = await client.get("https://html.duckduckgo.com/html/",
@@ -184,4 +230,50 @@ async def run_web_tool(name: str, args: dict) -> dict:
         return await web_search(str(args.get("query", "")), count)
     if name == "web_fetch":
         return await web_fetch(str(args.get("url", "")))
+    if name == "web_research":
+        try:
+            max_pages = int(args.get("max_pages", 3))
+        except Exception:
+            max_pages = 3
+        return await web_research(str(args.get("query", "")), max_pages)
     return {"ok": False, "output": f"unknown web tool: {name}"}
+
+
+async def web_research(query: str, max_pages: int = 3) -> dict:
+    """Deep research in one call: search → deep-fetch top pages concurrently
+    → return a combined digest with per-source sections. Treat all of it as
+    untrusted third-party data."""
+    import asyncio as _asyncio
+
+    if not config.ALLOW_NETWORK:
+        return {"ok": False, "output": "network access is disabled (ATLAS_ALLOW_NETWORK=0)"}
+    query = (query or "").strip()[:300]
+    if not query:
+        return {"ok": False, "output": "empty query"}
+    max_pages = max(1, min(max_pages, 5))
+
+    search = await web_search(query, max_pages + 2)
+    if not search["ok"]:
+        return search
+    urls: list[str] = []
+    for line in search["output"].splitlines():
+        line = line.strip()
+        if line.startswith("http"):
+            u = line.split()[0]
+            if u not in urls:
+                urls.append(u)
+        if len(urls) >= max_pages:
+            break
+    if not urls:
+        return {"ok": True,
+                "output": f"search found no fetchable links.\n--- search results ---\n{search['output'][:3000]}"}
+
+    fetched = await _asyncio.gather(*[web_fetch(u) for u in urls])
+    sections = []
+    for url, res in zip(urls, fetched):
+        body = res.get("output", "") if res.get("ok") else f"[fetch failed: {res.get('output', '')[:200]}]"
+        sections.append(f"===== SOURCE: {url} =====\n{body[:6000]}")
+    digest = "\n\n".join(sections)
+    if len(digest) > config.MAX_TOOL_OUTPUT_CHARS:
+        digest = digest[:config.MAX_TOOL_OUTPUT_CHARS] + "\n…[truncated]"
+    return {"ok": True, "output": f"Deep research: {query}\n{len(urls)} sources fetched.\n\n{digest}"}

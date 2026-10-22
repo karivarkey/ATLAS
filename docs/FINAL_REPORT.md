@@ -42,6 +42,8 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | muse-spark retry (your failing case) | `python tests/e2e_musespark.py` | **PASS in 4 steps**: Responses API + real `shell_exec`, `exit=0` |
 | UI duplication + activity (your screenshot) | `bun e2e/ui_check.mjs` | **PASS**: answer renders once, pill auto-dismisses, no errors |
 | Web search + grounded answer | `python tests/e2e_web.py` | **PASS in 3 steps**: `web_search` → `web_fetch` (python.org) → cited 3.15.1 |
+| Self-hosted search (SearXNG) | local engine @ :8888 | **41 results**, JSON API enabled, no rate limits |
+| Deep research | `python tests/e2e_research.py` | **PASS in 3 steps**: `web_research` + fetch, 7 sources cited |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
 
 ## Honest limitations

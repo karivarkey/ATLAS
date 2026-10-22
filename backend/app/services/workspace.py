@@ -115,6 +115,8 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"Search `{str(args.get('query', ''))[:100]}`"
     if name == "web_fetch":
         return f"Fetch `{str(args.get('url', ''))[:100]}`"
+    if name == "web_research":
+        return f"Deep-research `{str(args.get('query', ''))[:100]}`"
     return name
 
 
@@ -123,7 +125,7 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
         return False, ""
     if name == "ask_user":
         return False, ""
-    if name in ("web_search", "web_fetch"):
+    if name in ("web_search", "web_fetch", "web_research"):
         # Read-only network retrieval. Results are untrusted third-party
         # data; the agent prompt requires treating them as such.
         if not config.ALLOW_NETWORK:
@@ -141,7 +143,7 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
 
 async def run_tool(name: str, args: dict, root: Path) -> dict:
     """Execute a tool. Returns {'ok': bool, 'output': str, 'diff': str?}."""
-    if name in ("web_search", "web_fetch"):
+    if name in ("web_search", "web_fetch", "web_research"):
         return await webtools.run_web_tool(name, args)
     try:
         if name == "fs_list":
