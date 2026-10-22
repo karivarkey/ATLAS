@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 from .. import config
+from . import webtools
 
 TOOL_SCHEMAS = [
     {
@@ -70,7 +71,7 @@ TOOL_SCHEMAS = [
         "description": "Ask the user a question when blocked. Execution pauses until answered.",
         "parameters": {"question": "the question for the user"},
     },
-]
+] + webtools.WEB_TOOL_SCHEMAS
 
 DESTRUCTIVE_PATTERNS = re.compile(
     r"(rm\s+-rf|rmdir\s+/s|del\s+/[fs]|format\s+[a-z]:|mkfs|shutdown|reboot|:?\(\)\s*\{)",
@@ -110,6 +111,10 @@ def summarize_tool(name: str, args: dict) -> str:
         return "Git status"
     if name == "ask_user":
         return "Question for you"
+    if name == "web_search":
+        return f"Search `{str(args.get('query', ''))[:100]}`"
+    if name == "web_fetch":
+        return f"Fetch `{str(args.get('url', ''))[:100]}`"
     return name
 
 
@@ -117,6 +122,12 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
     if name in ("fs_read", "fs_list", "fs_glob", "fs_grep", "git_status"):
         return False, ""
     if name == "ask_user":
+        return False, ""
+    if name in ("web_search", "web_fetch"):
+        # Read-only network retrieval. Results are untrusted third-party
+        # data; the agent prompt requires treating them as such.
+        if not config.ALLOW_NETWORK:
+            return True, "Network access is disabled (ATLAS_ALLOW_NETWORK=0)."
         return False, ""
     if name == "shell_exec":
         cmd = str(args.get("command", ""))
@@ -130,6 +141,8 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
 
 async def run_tool(name: str, args: dict, root: Path) -> dict:
     """Execute a tool. Returns {'ok': bool, 'output': str, 'diff': str?}."""
+    if name in ("web_search", "web_fetch"):
+        return await webtools.run_web_tool(name, args)
     try:
         if name == "fs_list":
             target = resolve(root, str(args.get("path", ".")))
