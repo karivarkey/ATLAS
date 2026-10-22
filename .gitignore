@@ -1,9 +1,13 @@
-__pycache__/
-*.pyc
-.pytest_cache/
+# Atlas local data (never commit)
+vault/
 data/
 workspaces/*/
 !workspaces/.gitkeep
+backend/.env.local
+# build + runtime artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
 node_modules/
 dist/
 .env

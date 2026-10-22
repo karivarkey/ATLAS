@@ -102,6 +102,18 @@ export const api = {
     req<{ active_execution: ExecutionSnapshot | null }>(
       `/api/v1/conversations/${id}/status`,
     ),
+  // Conversation-scoped decision endpoints (server resolves the waiting
+  // execution). Always prefer these over execution-scoped ids, which go stale.
+  answerConversation: (convId: string, text: string) =>
+    req<{ ok: boolean }>(`/api/v1/conversations/${convId}/answer`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+  approveConversation: (convId: string, approved: boolean) =>
+    req<{ ok: boolean }>(`/api/v1/conversations/${convId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ approved }),
+    }),
   answer: (id: string, text: string) =>
     req<{ ok: boolean }>(`/api/v1/conversations/${id}/answer`, {
       method: 'POST',
@@ -179,4 +191,22 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  onboardingStatus: () =>
+    req<{ onboarded: boolean; key_configured: boolean; default_model: string }>(
+      '/api/v1/onboarding/status',
+    ),
+  onboardingStart: (model = '') =>
+    req<{ conversation_id: string; execution_id: string }>('/api/v1/onboarding/start', {
+      method: 'POST',
+      body: JSON.stringify({ model }),
+    }),
+  sendOnboardingMessage: (id: string, content: string, model = '') =>
+    req<{ execution_id: string; message_id: string }>(
+      `/api/v1/conversations/${id}/messages`,
+      { method: 'POST', body: JSON.stringify({ content, model }) },
+    ),
+  skipOnboarding: () =>
+    req<{ ok: boolean }>('/api/v1/onboarding/skip', { method: 'POST' }),
+  reopenOnboarding: () =>
+    req<{ ok: boolean }>('/api/v1/onboarding/reopen', { method: 'POST' }),
 };

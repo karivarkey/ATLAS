@@ -289,6 +289,11 @@ body {
 .settings-mem { display: flex; flex-direction: column; gap: 8px; }
 .mem-note { margin-bottom: 2px; }
 .mem-history { margin-top: 4px; max-height: 160px; overflow-y: auto; }
+.ob-modal { width: 640px; }
+.ob-msgs { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  padding: 6px 2px; }
+.ob-composer textarea { width: 100%; border: 0; outline: 0; resize: none; font: inherit;
+  background: transparent; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
 .modal-head h3 { margin: 0; }
 .modal label { font-size: 12.5px; font-weight: 600; margin-top: 6px; }
@@ -348,3 +353,16 @@ body {
   padding: 10px 12px; font-size: 13px; margin-bottom: 10px; }
 .mem-body h4 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase;
   letter-spacing: 0.05em; color: var(--muted); }
+
+/* ---------- Decision dock (pinned above composer; single decision UI) ---------- */
+.dock {
+  max-width: 780px; margin: 0 auto 10px; border: 1px solid #f0d48a;
+  background: #fffaf0; border-radius: 10px; padding: 12px;
+}
+.dock-q { display: flex; gap: 8px; align-items: flex-start; font-weight: 550; margin-bottom: 8px; }
+.dock-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.dock-row input {
+  flex: 1; min-width: 200px; padding: 8px 10px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 13px;
+}
+.dock-error { color: var(--err); font-size: 12.5px; margin-top: 6px; }

@@ -177,6 +177,12 @@ async def run_execution(execution_id: str) -> None:
                         else config.AUTO_APPROVE_WORKSPACE_WRITES)
 
         messages = _history(conv_id)
+        try:
+            if row["system_prompt"]:
+                messages[0] = {"role": "system", "content": row["system_prompt"]}
+        except Exception:
+            pass
+        onboarding_mode = bool(row["system_prompt"] and "setup guide" in row["system_prompt"])
         # Layer B/C/D: bounded cross-chat context + provenance refs.
         try:
             from . import embeddings as _emb
@@ -301,6 +307,17 @@ async def run_execution(execution_id: str) -> None:
             for tc in tool_calls:
                 name = tc.get("name", "")
                 args = tc.get("arguments", {}) or {}
+                if onboarding_mode:
+                    # The interview stays conversational: no tool execution
+                    # during onboarding, including ask_user (the user simply
+                    # replies to the next message).
+                    await events.abroadcast(execution_id, "tool_failed",
+                                            {"name": name,
+                                             "error": "tools are disabled during setup — ask in plain text"})
+                    messages.append({"role": "user",
+                                     "content": f"[setup] You tried to call tool '{name}'. Tools are disabled"
+                                                " during onboarding. Ask your question in plain text instead."})
+                    break
                 if not isinstance(args, dict):
                     args = {"_raw": str(args)}
                 key = f"{name}:{json.dumps(args, sort_keys=True)[:500]}"
@@ -317,11 +334,21 @@ async def run_execution(execution_id: str) -> None:
                                         {"name": name, "summary": summary, "arguments": args})
 
                 if name == "ask_user":
-                    question = str(args.get("question", "I need more information."))
+                    try:
+                        asked = ws.validate_ask_user(args)
+                    except ValueError:
+                        asked = {"question": str(args.get("question", "")
+                                                 or "I need more information."),
+                                 "options": [], "kind": ""}
+                    pending_q: dict = {"question": asked["question"]}
+                    if asked.get("options"):
+                        pending_q["options"] = asked["options"]
+                    if asked.get("kind"):
+                        pending_q["kind"] = asked["kind"]
                     db.execute("UPDATE executions SET pending_json = ?, updated_at = ? WHERE id = ?",
-                               (json.dumps({"question": question}), db.now_ms(), execution_id))
+                               (json.dumps(pending_q), db.now_ms(), execution_id))
                     events.set_execution_status(execution_id, "waiting_input")
-                    await events.abroadcast(execution_id, "question_asked", {"question": question})
+                    await events.abroadcast(execution_id, "question_asked", pending_q)
                     answer = await _wait_for("answer", execution_id)
                     if answer is None:
                         events.set_execution_status(execution_id, "cancelled", "cancelled while waiting")
@@ -455,5 +482,10 @@ def _finalize_message(msg_id: str, content: str, status: str = "done") -> None:
             if row:
                 _mem.ingest_message(row["conversation_id"], msg_id, "assistant", content,
                                     row["execution_id"] or "")
+        except Exception:
+            pass
+        try:
+            from . import onboarding as _ob
+            _ob.maybe_finish_from_text(content)
         except Exception:
             pass

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -68,8 +69,12 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "ask_user",
-        "description": "Ask the user a question when blocked. Execution pauses until answered.",
-        "parameters": {"question": "the question for the user"},
+        "description": "Ask the user a question when blocked. Execution pauses until answered."
+                       " For real choices, pass 2-4 options as [{id, label}]; free text"
+                       " is always allowed alongside options.",
+        "parameters": {"question": "the question for the user",
+                        "options": "optional JSON array of up to 6 {id,label} choices (labels <=80 chars)",
+                        "kind": "optional question kind, e.g. 'choice'"},
     },
     {
         "name": "search_memory",
@@ -102,6 +107,46 @@ DESTRUCTIVE_PATTERNS = re.compile(
     r"(rm\s+-rf|rmdir\s+/s|del\s+/[fs]|format\s+[a-z]:|mkfs|shutdown|reboot|:?\(\)\s*\{)",
     re.IGNORECASE,
 )
+
+MAX_ASK_OPTIONS = 6
+MAX_ASK_LABEL_CHARS = 80
+
+
+def validate_ask_user(args: dict) -> dict:
+    """Validate + sanitize ask_user tool args.
+
+    Returns {"question": str, "options": [{id, label}], "kind": str}.
+    Raises ValueError on bad options payloads (>6 entries, non-list,
+    missing id/label, label >80 chars) so the caller can reject or
+    fall back to a plain question.
+    """
+    args = args if isinstance(args, dict) else {}
+    question = str(args.get("question", "") or "").strip() or "I need more information."
+    kind = str(args.get("kind", "") or "").strip()[:40]
+    raw = args.get("options", None)
+    if raw in (None, ""):
+        return {"question": question, "options": [], "kind": kind}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raise ValueError("options must be a JSON array of {id,label}")
+    if not isinstance(raw, list):
+        raise ValueError("options must be a list of {id,label}")
+    if len(raw) > MAX_ASK_OPTIONS:
+        raise ValueError(f"options must have at most {MAX_ASK_OPTIONS} entries")
+    options = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError("each option must be an {id,label} object")
+        oid = str(entry.get("id", "") or "").strip()[:40]
+        label = str(entry.get("label", "") or "").strip()
+        if not oid or not label:
+            raise ValueError("each option needs a non-empty id and label")
+        if len(label) > MAX_ASK_LABEL_CHARS:
+            raise ValueError(f"option labels must be <={MAX_ASK_LABEL_CHARS} chars")
+        options.append({"id": oid, "label": label})
+    return {"question": question, "options": options, "kind": kind}
 
 
 def workspace_root(conversation_id: str) -> Path:

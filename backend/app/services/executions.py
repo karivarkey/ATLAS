@@ -31,7 +31,8 @@ def _conv_lock(conversation_id: str) -> asyncio.Lock:
     return lock
 
 
-async def submit(conversation_id: str, user_text: str, model: str) -> dict:
+async def submit(conversation_id: str, user_text: str, model: str,
+                 system_prompt: str = "") -> dict:
     conv = db.query_one("SELECT * FROM conversations WHERE id = ?", (conversation_id,))
     if not conv:
         raise KeyError("conversation not found")
@@ -57,10 +58,11 @@ async def submit(conversation_id: str, user_text: str, model: str) -> dict:
     ws_id = conv["workspace_id"] or conversation_id
     db.execute(
         "INSERT INTO executions (id, conversation_id, status, model, workspace_id,"
-        " input_text, current_step, max_steps, pending_json, error, started_at, updated_at, ended_at)"
-        " VALUES (?, ?, 'queued', ?, ?, ?, 0, ?, '{}', '', ?, ?, 0)",
+        " input_text, current_step, max_steps, pending_json, error, started_at, updated_at, ended_at,"
+        " system_prompt)"
+        " VALUES (?, ?, 'queued', ?, ?, ?, 0, ?, '{}', '', ?, ?, 0, ?)",
         (execution_id, conversation_id, model, ws_id, user_text,
-         config.MAX_STEPS_PER_EXECUTION, db.now_ms(), db.now_ms()),
+         config.MAX_STEPS_PER_EXECUTION, db.now_ms(), db.now_ms(), system_prompt or ""),
     )
     db.execute("UPDATE conversations SET workspace_id = ? WHERE id = ?",
                (ws_id, conversation_id))

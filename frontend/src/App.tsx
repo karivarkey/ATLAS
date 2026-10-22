@@ -8,12 +8,15 @@ import { api, ChatMessage } from './api'
 import { Markdown } from './markdown'
 import { MemoryFilePanel } from './MemoryFiles'
 import { MemoryView } from './MemoryView'
+import { OnboardingWizard } from './OnboardingWizard'
+import { PendingDock } from './PendingDock'
 import { useStore } from './store'
 import { ToolCard } from './ToolCard'
 import { useExecutionStream } from './useStream'
 
 export default function App() {
   const [view, setView] = useState<'chat' | 'memory'>('chat')
+  const [showOnboarding, setShowOnboarding] = useState(false)
   const activeId = useStore((s) => s.activeId)
   const loadConversations = useStore((s) => s.loadConversations)
   const loadModels = useStore((s) => s.loadModels)
@@ -25,6 +28,9 @@ export default function App() {
     loadConversations()
     loadModels()
     checkHealth()
+    api.onboardingStatus()
+      .then((s) => { if (!s.onboarded) setShowOnboarding(true) })
+      .catch(() => {})
   }, [loadConversations, loadModels, checkHealth])
 
   return (
@@ -39,8 +45,16 @@ export default function App() {
           <EmptyState />
         )}
       </main>
-      {settingsOpen && <SettingsModal />}
+      {settingsOpen && <SettingsModal onReonboard={() => setShowOnboarding(true)} />}
       {keyConfigured === false && <KeyBanner />}
+      {showOnboarding && (
+        <OnboardingWizard
+          onDone={() => {
+            setShowOnboarding(false)
+            loadConversations()
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -261,9 +275,6 @@ function ChatView({ convId }: { convId: string }) {
           </div>
         )}
         {stream && <Activity convId={convId} executionId={executionId} />}
-        {stream && ['waiting_input', 'waiting_approval'].includes(stream.status) && (
-          <PendingCard convId={convId} executionId={executionId!} stream={stream} />
-        )}
         {stream && stream.status === 'paused' && (
           <div className="notice">Paused at a checkpoint. Resume to continue.</div>
         )}
@@ -288,6 +299,9 @@ function ChatView({ convId }: { convId: string }) {
           </button>
         )}
       </div>
+      {stream && ['waiting_input', 'waiting_approval'].includes(stream.status) && (
+        <PendingDock convId={convId} status={stream.status} pending={stream.pending || {}} />
+      )}
       <Composer
         convId={convId}
         draft={draft}
@@ -315,54 +329,6 @@ function MessageRow({ msg }: { msg: ChatMessage }) {
       <div className="bubble">
         <Markdown text={msg.content} />
         {msg.status === 'error' && <div className="muted">Delivery failed.</div>}
-      </div>
-    </div>
-  )
-}
-
-function PendingCard({ convId, executionId, stream }: { convId: string; executionId: string; stream: any }) {
-  const [text, setText] = useState('')
-  if (stream.status === 'waiting_input') {
-    return (
-      <div className="pending">
-        <div className="pending-q"><AlertTriangle size={14} /> {stream.pending.question}</div>
-        <div className="pending-row">
-          <input
-            placeholder="Type your answer…"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && text.trim()) {
-                api.answer(executionId, text.trim()).catch(() => alert('Answer failed'))
-                setText('')
-              }
-            }}
-          />
-          <button
-            className="btn primary sm"
-            onClick={() => {
-              if (!text.trim()) return
-              api.answer(executionId, text.trim()).catch(() => alert('Answer failed'))
-              setText('')
-            }}
-          >
-            Send
-          </button>
-        </div>
-      </div>
-    )
-  }
-  return (
-    <div className="pending">
-      <div className="pending-q"><AlertTriangle size={14} /> Approval required: {stream.pending.summary}</div>
-      {stream.pending.reason && <div className="muted">{stream.pending.reason}</div>}
-      <div className="pending-row">
-        <button className="btn primary sm" onClick={() => api.approve(executionId, true).catch(() => {})}>
-          <Check size={14} /> Approve
-        </button>
-        <button className="btn sm" onClick={() => api.approve(executionId, false).catch(() => {})}>
-          <X size={14} /> Reject
-        </button>
       </div>
     </div>
   )
@@ -738,7 +704,7 @@ function Composer({ convId, draft, setDraft, send, sending, running, executionId
 
 /* ---------------- Settings ---------------- */
 
-function SettingsModal() {
+function SettingsModal({ onReonboard }: { onReonboard: () => void }) {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const models = useStore((s) => s.models)
   const [settings, setSettings] = useState<any>(null)
@@ -812,6 +778,16 @@ function SettingsModal() {
               <div className="muted small">
                 OpenCode Go key: {settings.key_configured ? 'configured ✓' : 'not configured — set OPENCODE_ZEN_API_KEY on the server and restart.'}
               </div>
+              <button
+                className="mini-btn"
+                onClick={async () => {
+                  await api.reopenOnboarding()
+                  setSettingsOpen(false)
+                  onReonboard()
+                }}
+              >
+                Re-run onboarding interview
+              </button>
               <div className="modal-foot">
                 <button className="btn" onClick={() => setSettingsOpen(false)}>Cancel</button>
                 <button className="btn primary" onClick={save}>Save</button>
