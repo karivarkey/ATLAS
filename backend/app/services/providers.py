@@ -132,19 +132,50 @@ async def responses_api(model: dict, messages: list[dict],
                         session_id: str = "") -> AsyncIterator[dict]:
     model_id = model["id"].split("/", 1)[-1] if "/" in model["id"] else model["id"]
     text = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-    payload = {"model": model_id, "input": text, "tools": openai_tools(), "stream": True}
+    tools = [{"type": "function", "name": t["name"], "description": t["description"],
+              "parameters": {"type": "object",
+                             "properties": {k: {"type": "string"}
+                                            for k in t["parameters"]},
+                             "additionalProperties": False}}
+             for t in ws.TOOL_SCHEMAS]
+    payload = {"model": model_id, "input": text, "tools": tools, "stream": True}
+    calls: dict[str, dict] = {}
+    order: list = []
     async for ev in _post_sse(model["endpoint"], payload, session_id):
         t = ev.get("type", "")
-        if t in ("response.output_text.delta",):
-            yield {"text": ev.get("delta", "")}
+        if t == "response.output_text.delta":
+            if ev.get("delta"):
+                yield {"text": ev["delta"]}
+        elif t == "response.output_item.added":
+            item = ev.get("item", {})
+            if item.get("type") == "function_call":
+                key = item.get("id") or item.get("call_id") or f"rc_{len(order)}"
+                order.append(key)
+                calls[key] = {"id": key, "name": item.get("name", ""), "arguments": ""}
         elif t == "response.function_call_arguments.delta":
-            continue
-        elif t in ("response.completed",):
-            out = json.dumps(ev)[:4000]
-            if out.strip():
-                yield {"text": ""}
-    # Responses API tool-call parsing is provider-specific; fall back to chat.
-    # If no tool events parsed, the agent loop treats output as text-only turn.
+            if order:
+                calls[order[-1]]["arguments"] += ev.get("delta", "")
+        elif t == "response.output_item.done":
+            item = ev.get("item", {})
+            if item.get("type") == "function_call":
+                key = item.get("id") or item.get("call_id")
+                slot = calls.get(key or "") or (calls[order[-1]] if order else None)
+                if slot:
+                    if item.get("name"):
+                        slot["name"] = item["name"]
+                    if item.get("arguments"):
+                        slot["arguments"] = item["arguments"]
+        elif t == "response.completed":
+            break
+    for key in order:
+        slot = calls[key]
+        try:
+            args = json.loads(slot["arguments"] or "{}")
+        except Exception:
+            args = {"_raw": slot["arguments"]}
+        if slot["name"]:
+            yield {"tool": {"id": key, "name": slot["name"],
+                            "arguments": args if isinstance(args, dict) else {}}}
 
 
 async def anthropic_messages(model: dict, messages: list[dict],
@@ -204,6 +235,44 @@ async def ollama_chat(model: dict, messages: list[dict]) -> AsyncIterator[dict]:
                     break
 
 
+async def google_generate(model: dict, messages: list[dict],
+                          session_id: str = "") -> AsyncIterator[dict]:
+    """Gemini streamGenerateContent (alt=sse) with function-call support."""
+    model_id = model["id"].split("/", 1)[-1] if "/" in model["id"] else model["id"]
+    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+    contents = []
+    for m in messages:
+        if m["role"] not in ("user", "assistant"):
+            continue
+        role = "user" if m["role"] == "user" else "model"
+        text = m["content"] if role == "user" and not contents and system \
+            else m["content"]
+        if role == "user" and not contents and system:
+            text = f"[system: {system}]\n{text}"
+        contents.append({"role": role, "parts": [{"text": text or "..."}]})
+    if not contents:
+        contents = [{"role": "user", "parts": [{"text": system or "..."}]}]
+    decls = [{"name": t["name"], "description": t["description"],
+              "parameters": {"type": "object",
+                             "properties": {k: {"type": "string"}
+                                            for k in t["parameters"]}}}
+             for t in ws.TOOL_SCHEMAS]
+    payload = {"contents": contents,
+               "tools": [{"functionDeclarations": decls}],
+               "generationConfig": {"temperature": 0.7}}
+    url = f"{model['endpoint']}:streamGenerateContent?alt=sse"
+    async for ev in _post_sse(url, payload, session_id):
+        for cand in ev.get("candidates", []):
+            for part in (cand.get("content", {}) or {}).get("parts", []):
+                if part.get("text"):
+                    yield {"text": part["text"]}
+                fc = part.get("functionCall", {})
+                if fc.get("name"):
+                    yield {"tool": {"id": f"g_{abs(hash(fc['name'])) % 10**8}",
+                                    "name": fc["name"],
+                                    "arguments": fc.get("args", {}) or {}}}
+
+
 async def complete(model: dict, messages: list[dict],
                    session_id: str = "") -> AsyncIterator[dict]:
     protocol = model.get("protocol", "chat_completions")
@@ -212,6 +281,9 @@ async def complete(model: dict, messages: list[dict],
             yield e
     elif protocol == "messages":
         async for e in anthropic_messages(model, messages, session_id):
+            yield e
+    elif protocol == "google":
+        async for e in google_generate(model, messages, session_id):
             yield e
     elif protocol == "ollama":
         async for e in ollama_chat(model, messages):

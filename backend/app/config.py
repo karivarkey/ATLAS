@@ -40,7 +40,7 @@ OPENCODE_ZEN_API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "").strip() or _re
 KEY_SOURCE = "env" if os.environ.get("OPENCODE_ZEN_API_KEY", "").strip() else (
     "hermes-env" if OPENCODE_ZEN_API_KEY else "none")
 OPENCODE_GO_BASE = os.environ.get(
-    "OPENCODE_GO_BASE", "https://opencode.ai/zen/go/v1"
+    "OPENCODE_GO_BASE", "https://opencode.ai/inference/go/v1"
 ).rstrip("/")
 OPENCODE_GO_MODELS_URL = f"{OPENCODE_GO_BASE}/models"
 

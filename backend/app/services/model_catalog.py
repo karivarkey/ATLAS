@@ -33,21 +33,42 @@ def _provider_of(raw: dict) -> str:
     return "opencode-go"
 
 
+# Exact per-model routing from the official Go docs
+# (https://opencode.ai/docs/go/#endpoints). Match longest id first so
+# e.g. minimax-m3.1-flash (chat) is not caught by minimax-m3 (messages).
+# Unknown ids fall back to the chat_completions heuristic.
+GO_BASE = "https://opencode.ai/inference/go"
+_RESPONSE_IDS = {
+    "grok-4.7", "grok-4.6",
+    "gpt-6-luna", "gpt-5.6-luna",
+    "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
+}
+_MESSAGE_IDS = {
+    "claude-haiku-5-5",
+    "minimax-m3",
+    "qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus",
+}
+_GOOGLE_IDS = {
+    "gemini-4-argon-contributor",
+}
+
+
 def _protocol_for(model_id: str, raw: dict) -> tuple[str, str]:
-    """Return (protocol, endpoint-path) without hardcoding one for all models."""
+    mid = model_id.split("/", 1)[-1] if "/" in model_id else model_id
+    if mid in _RESPONSE_IDS or mid.startswith("grok-") or mid.startswith("muse-spark-"):
+        return "responses", f"{GO_BASE}/openai/v1/responses"
+    if mid in _GOOGLE_IDS or mid.startswith("gemini-"):
+        return "google", f"{GO_BASE}/google/v1beta/models/{mid}"
+    if mid in _MESSAGE_IDS or mid.startswith("claude-") or mid.startswith("qwen3."):
+        return "messages", f"{GO_BASE}/anthropic/v1/messages"
     explicit = str(raw.get("protocol", "") or raw.get("api", "")).lower()
-    base = config.OPENCODE_GO_BASE
     if "response" in explicit:
-        return "responses", f"{base}/responses"
+        return "responses", f"{GO_BASE}/openai/v1/responses"
     if "message" in explicit or "anthropic" in explicit:
-        return "messages", f"{base}/messages"
-    if "chat" in explicit or "openai" in explicit:
-        return "chat_completions", f"{base}/chat/completions"
-    mid = model_id.lower()
-    if "claude" in mid or "anthropic" in mid:
-        return "messages", f"{base}/messages"
-    # Default family used by OpenCode Go for open coding models.
-    return "chat_completions", f"{base}/chat/completions"
+        return "messages", f"{GO_BASE}/anthropic/v1/messages"
+    if "google" in explicit or "gemini" in explicit:
+        return "google", f"{GO_BASE}/google/v1beta/models/{mid}"
+    return "chat_completions", f"{GO_BASE}/openai/v1/chat/completions"
 
 
 def normalize(raw_models: list[dict]) -> list[dict]:

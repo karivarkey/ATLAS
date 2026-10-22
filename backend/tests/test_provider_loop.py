@@ -85,6 +85,34 @@ def _ok_for(port):
     return _ok
 
 
+class FakeResponses(BaseHTTPRequestHandler):
+    """Minimal OpenAI Responses SSE: text delta, function_call item, done."""
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        assert body.get("stream") is True
+        assert isinstance(body.get("tools"), list)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        frames = [
+            {"type": "response.output_text.delta", "delta": "On it. "},
+            {"type": "response.output_item.added",
+             "item": {"type": "function_call", "id": "fc_1", "name": "fs_write"}},
+            {"type": "response.function_call_arguments.delta",
+             "delta": '{"path": "resp.txt", "content": "via-responses"}'},
+            {"type": "response.output_item.done",
+             "item": {"type": "function_call", "id": "fc_1", "name": "fs_write"}},
+            {"type": "response.completed"},
+        ]
+        for f in frames:
+            self.wfile.write(f"data: {json.dumps(f)}\n\n".encode())
+
+
 def _submit_and_wait(cid, title, text, model, timeout_s=30):
     """Submit inside a single event loop and wait — one asyncio.run total."""
     async def main():
@@ -99,6 +127,27 @@ def _submit_and_wait(cid, title, text, model, timeout_s=30):
             await asyncio.sleep(0.1)
         return eid
     return asyncio.run(main())
+
+
+def test_responses_protocol_tool_loop(tmp_path, monkeypatch):
+    """Responses-family models must yield real tool calls (muse-spark class)."""
+    db.reset_for_tests(tmp_path)
+    server = HTTPServer(("127.0.0.1", 0), FakeResponses)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    async def _ok(m):
+        return True, {"id": m, "protocol": "responses",
+                      "endpoint": f"http://127.0.0.1:{port}/responses",
+                      "supports_tools": True}
+
+    monkeypatch.setattr(model_catalog, "validate_model", _ok)
+    eid = _submit_and_wait("cresp", "t", "write resp.txt", "fake/resp")
+    snap = executions.get_snapshot(eid)
+    assert snap["status"] == "completed", snap
+    from app.services.workspace import workspace_root as _wr
+    assert (_wr("cresp") / "resp.txt").read_text() == "via-responses"
+    server.shutdown()
 
 
 def test_agent_loop_real_tools_fake_model(tmp_path, monkeypatch):

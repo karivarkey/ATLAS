@@ -39,6 +39,7 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | Real task, live Go default | `python tests/e2e_task.py` (`opencode-go/glm-5.3-flash`) | **PASS in 3 steps**: `exit=0`, `HELLO-ATLAS` |
 | Browser E2E | `bun e2e/e2e.mjs` (Playwright/Chromium) | **8/8 passed** (boot, CRUD, picker, switch, stream, done, refresh, no errors) |
 | Live Go catalog | `python tests/check_live.py` (Hermes-sourced key) | **live, not stale, 36 chat models**, real ids + per-model protocols, **0 ollama entries** |
+| muse-spark retry (your failing case) | `python tests/e2e_musespark.py` | **PASS in 4 steps**: Responses API + real `shell_exec`, `exit=0` |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
 
 ## Honest limitations
@@ -55,6 +56,10 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
    `opencode-go/glm-5.3-flash` ($0.15/$0.50 per 1M, ~31k req/mo on Go).
    Every inference request sends `x-opencode-session` (stable per
    conversation, required by Go for routing) and `User-Agent: atlas/1.0`.
+   Model→endpoint routing follows the official Go endpoint table exactly
+   (responses / chat_completions / anthropic messages / google); a wrong
+   guess previously caused `ModelProtocolUnsupported` on muse-spark, now
+   covered by routing tests + a live muse-spark retry.
    no output in 180 s) → standardized on 1.5b for live verification. 7b pulled
    and listed; usable on stronger hardware.
 3. **Small-model flailing**: 1.5b needed 50+ steps on first attempt (fixed by

@@ -84,6 +84,24 @@ def test_go_session_headers(tmp_db):
     assert "x-opencode-session" not in h2
 
 
+def test_go_routing_table(tmp_db):
+    from app.services.model_catalog import _protocol_for
+    assert _protocol_for("opencode-go/muse-spark-1.3-contributor", {})[0] == "responses"
+    assert _protocol_for("opencode-go/grok-4.7", {})[0] == "responses"
+    assert _protocol_for("opencode-go/gpt-5.6-luna", {})[0] == "responses"
+    ep = _protocol_for("opencode-go/muse-spark-1.3-contributor", {})
+    assert ep[1] == "https://opencode.ai/inference/go/openai/v1/responses"
+    assert _protocol_for("opencode-go/claude-haiku-5-5", {}) == (
+        "messages", "https://opencode.ai/inference/go/anthropic/v1/messages")
+    assert _protocol_for("opencode-go/minimax-m3", {})[0] == "messages"
+    assert _protocol_for("opencode-go/minimax-m3.1-flash", {})[0] == "chat_completions"
+    assert _protocol_for("opencode-go/gemini-4-argon-contributor", {}) == (
+        "google", "https://opencode.ai/inference/go/google/v1beta/models/gemini-4-argon-contributor")
+    assert _protocol_for("opencode-go/glm-5.3-flash", {}) == (
+        "chat_completions", "https://opencode.ai/inference/go/openai/v1/chat/completions")
+    assert _protocol_for("opencode-go/beam-free", {})[0] == "chat_completions"
+
+
 def test_terminal_states_lock(tmp_db):
     cid = "conv_state"
     now = db.now_ms()
