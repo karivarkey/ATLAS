@@ -1,0 +1,403 @@
+"""Agentic tool-call loop with bounded autonomous execution.
+
+State machine per execution: queued → starting → running ⇄
+(waiting_input | waiting_approval | paused) → verifying → completed,
+plus failed / cancelled / timed_out / interrupted.
+
+Cooperative pause: the loop checks control flags between model calls
+and after each tool; it never pauses mid-filesystem-mutation.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+
+from .. import db, events
+from .. import config
+from . import model_catalog, providers, workspace as ws
+
+log = logging.getLogger("atlas.agent")
+
+_controls: dict[str, dict] = {}
+_controls_lock = asyncio.Lock()
+
+
+async def set_control(execution_id: str, **kwargs) -> dict:
+    async with _controls_lock:
+        ctl = _controls.setdefault(execution_id, {"pause": False, "cancel": False,
+                                                  "answer": None, "approval": None})
+        ctl.update(kwargs)
+        return dict(ctl)
+
+
+async def get_control(execution_id: str) -> dict:
+    async with _controls_lock:
+        return dict(_controls.setdefault(execution_id, {"pause": False, "cancel": False,
+                                                        "answer": None, "approval": None}))
+
+
+async def clear_control(execution_id: str) -> None:
+    async with _controls_lock:
+        _controls.pop(execution_id, None)
+
+
+def extract_text_tool_calls(text: str) -> list[dict]:
+    """Fallback for models that emit tool calls as fenced JSON instead of
+    native function calls. Handles one or several JSON objects per fence.
+    Only accepts known tool names with dict args. Returns at most 3 calls."""
+    import re
+    known = {t["name"] for t in ws.TOOL_SCHEMAS}
+    out: list[dict] = []
+
+    def balanced_objects(s: str):
+        """Yield balanced {...} substrings."""
+        depth = 0
+        start = -1
+        in_str = False
+        esc = False
+        for i, ch in enumerate(s):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield s[start:i + 1]
+                    start = -1
+
+    fences = re.findall(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    candidates = fences if fences else [text]
+    for block in candidates:
+        for obj_s in balanced_objects(block):
+            if len(out) >= 3:
+                return out
+            try:
+                obj = json.loads(obj_s)
+            except Exception:
+                continue
+            if isinstance(obj, dict) and obj.get("name") in known:
+                args = obj.get("arguments", {})
+                out.append({"id": f"text_{len(out)}", "name": obj["name"],
+                            "arguments": args if isinstance(args, dict) else {}})
+    return out
+
+
+def _history(conversation_id: str, limit: int = 60) -> list[dict]:
+    rows = db.query(
+        "SELECT role, content, model FROM messages WHERE conversation_id = ?"
+        " ORDER BY created_at ASC LIMIT ?",
+        (conversation_id, limit),
+    )
+    out = [{"role": "system", "content": providers.SYSTEM_PROMPT}]
+    for r in rows:
+        role = r["role"] if r["role"] in ("user", "assistant") else "user"
+        out.append({"role": role, "content": r["content"] or ""})
+    return out
+
+
+def _record_message(conversation_id: str, role: str, content: str, model: str = "",
+                    execution_id: str = "", status: str = "done") -> str:
+    mid = db.new_id("msg")
+    db.execute(
+        "INSERT INTO messages (id, conversation_id, role, content, model, parts_json,"
+        " execution_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (mid, conversation_id, role, content, model, "[]", execution_id, status,
+         db.now_ms()),
+    )
+    db.execute("UPDATE conversations SET updated_at = ? WHERE id = ?",
+               (db.now_ms(), conversation_id))
+    return mid
+
+
+async def _wait_for(key: str, execution_id: str, timeout: float = 3600):
+    """Wait for answer/approval with cancellation + pause awareness."""
+    start = time.time()
+    while time.time() - start < timeout:
+        ctl = await get_control(execution_id)
+        if ctl.get("cancel"):
+            return None
+        if ctl.get(key) is not None:
+            val = ctl[key]
+            await set_control(execution_id, **{key: None})
+            return val
+        await asyncio.sleep(0.25)
+    return None
+
+
+async def run_execution(execution_id: str) -> None:
+    row = db.query_one("SELECT * FROM executions WHERE id = ?", (execution_id,))
+    if not row:
+        return
+    conv_id, model_id = row["conversation_id"], row["model"]
+    max_steps = row["max_steps"] or config.MAX_STEPS_PER_EXECUTION
+    await set_control(execution_id)
+    try:
+        ok, model = await model_catalog.validate_model(model_id)
+        if not ok:
+            # Fall back: refresh once, then fail honestly with available options.
+            catalog = await model_catalog.get_catalog(force_refresh=True)
+            ok = any(m["id"] == model_id for m in catalog["models"])
+            if ok:
+                model = next(m for m in catalog["models"] if m["id"] == model_id)
+        if not ok:
+            events.set_execution_status(execution_id, "failed",
+                                        f"model '{model_id}' unavailable. Refresh models and pick another.")
+            await events.abroadcast(execution_id, "turn_failed",
+                                    {"error": f"model '{model_id}' unavailable"})
+            return
+
+        events.set_execution_status(execution_id, "starting")
+        await events.abroadcast(execution_id, "turn_started",
+                                {"conversation_id": conv_id, "model": model_id})
+        events.set_execution_status(execution_id, "running")
+
+        try:
+            root = ws.workspace_root(conv_id)
+        except ValueError as exc:
+            events.set_execution_status(execution_id, "failed", str(exc))
+            return
+
+        auto_approve_row = db.query_one("SELECT value_json FROM settings WHERE key='auto_approve'")
+        auto_approve = (json.loads(auto_approve_row["value_json"]) if auto_approve_row
+                        else config.AUTO_APPROVE_WORKSPACE_WRITES)
+
+        messages = _history(conv_id)
+        assistant_buf = ""
+        msg_id = _record_message(conv_id, "assistant", "", model_id, execution_id, "streaming")
+        step = 0
+        stuck = False
+        seen_calls: dict[str, int] = {}
+        deadline = time.time() + config.EXECUTION_TIMEOUT_SECONDS
+
+        while step < max_steps:
+            ctl = await get_control(execution_id)
+            if ctl.get("cancel"):
+                events.set_execution_status(execution_id, "cancelled", "cancelled by user")
+                await events.abroadcast(execution_id, "cancelled", {})
+                _finalize_message(msg_id, assistant_buf or "*Cancelled.*")
+                return
+            if ctl.get("pause"):
+                events.set_execution_status(execution_id, "paused")
+                await events.abroadcast(execution_id, "status_changed",
+                                        {"from": "running", "to": "paused"})
+                while True:
+                    await asyncio.sleep(0.3)
+                    ctl2 = await get_control(execution_id)
+                    if ctl2.get("cancel"):
+                        events.force_execution_status(execution_id, "cancelled", "cancelled by user")
+                        await events.abroadcast(execution_id, "cancelled", {})
+                        _finalize_message(msg_id, assistant_buf or "*Cancelled.*")
+                        return
+                    if not ctl2.get("pause"):
+                        break
+                events.set_execution_status(execution_id, "running")
+            if time.time() > deadline:
+                events.set_execution_status(execution_id, "timed_out", "execution time budget exceeded")
+                _finalize_message(msg_id, assistant_buf + "\n\n*Timed out.*")
+                return
+
+            step += 1
+            db.execute("UPDATE executions SET current_step = ?, updated_at = ? WHERE id = ?",
+                       (step, db.now_ms(), execution_id))
+            text_delta_buf = ""
+            tool_calls: list[dict] = []
+            try:
+                async for chunk in providers.complete(model, messages):
+                    ctl = await get_control(execution_id)
+                    if ctl.get("cancel"):
+                        break
+                    if ctl.get("pause") and not chunk.get("tool"):
+                        # Checkpoint mid-stream for text: flush partial text
+                        # to history, pause, and continue on resume.
+                        if text_delta_buf:
+                            messages.append({"role": "assistant",
+                                             "content": text_delta_buf})
+                            text_delta_buf = ""
+                        events.set_execution_status(execution_id, "paused")
+                        await events.abroadcast(execution_id, "status_changed",
+                                                {"from": "running", "to": "paused"})
+                        while True:
+                            await asyncio.sleep(0.3)
+                            ctl2 = await get_control(execution_id)
+                            if ctl2.get("cancel") or not ctl2.get("pause"):
+                                break
+                        ctl = await get_control(execution_id)
+                        if ctl.get("cancel"):
+                            break
+                        events.set_execution_status(execution_id, "running")
+                        continue
+                    if "text" in chunk and chunk["text"]:
+                        text_delta_buf += chunk["text"]
+                        assistant_buf += chunk["text"]
+                        await events.abroadcast(execution_id, "text_delta",
+                                                {"delta": chunk["text"], "message_id": msg_id})
+                    elif "tool" in chunk:
+                        tool_calls.append(chunk["tool"])
+                else:
+                    pass
+                if ctl.get("cancel"):
+                    events.set_execution_status(execution_id, "cancelled", "cancelled by user")
+                    _finalize_message(msg_id, assistant_buf or "*Cancelled.*")
+                    return
+            except Exception as exc:
+                log.warning("provider error: %s", exc)
+                await events.abroadcast(execution_id, "turn_failed", {"error": str(exc)[:2000]})
+                events.set_execution_status(execution_id, "failed", f"provider error: {exc}"[:2000])
+                _finalize_message(msg_id, assistant_buf or f"*Provider error: {exc}*", status="error")
+                return
+
+            if text_delta_buf:
+                messages.append({"role": "assistant", "content": text_delta_buf})
+                db.execute("UPDATE messages SET content = ? WHERE id = ?",
+                           (assistant_buf, msg_id))
+
+            if not tool_calls and text_delta_buf:
+                # Fallback: some small models emit fenced-JSON tool calls.
+                tool_calls = extract_text_tool_calls(text_delta_buf)
+                if tool_calls:
+                    await events.abroadcast(execution_id, "text_delta",
+                                            {"delta": "\n[parsed tool call from text]",
+                                             "message_id": msg_id})
+
+            if not tool_calls:
+                break  # turn complete: model stopped calling tools
+
+            for tc in tool_calls:
+                name = tc.get("name", "")
+                args = tc.get("arguments", {}) or {}
+                if not isinstance(args, dict):
+                    args = {"_raw": str(args)}
+                key = f"{name}:{json.dumps(args, sort_keys=True)[:500]}"
+                seen_calls[key] = seen_calls.get(key, 0) + 1
+                if seen_calls[key] > 3:
+                    await events.abroadcast(execution_id, "tool_failed",
+                                            {"name": name, "error": "repeating identical call; stopped loop"})
+                    messages.append({"role": "user",
+                                     "content": f"[tool {name} repeated 3x — change strategy or ask_user]"})
+                    break
+
+                summary = ws.summarize_tool(name, args)
+                await events.abroadcast(execution_id, "tool_started",
+                                        {"name": name, "summary": summary, "arguments": args})
+
+                if name == "ask_user":
+                    question = str(args.get("question", "I need more information."))
+                    db.execute("UPDATE executions SET pending_json = ?, updated_at = ? WHERE id = ?",
+                               (json.dumps({"question": question}), db.now_ms(), execution_id))
+                    events.set_execution_status(execution_id, "waiting_input")
+                    await events.abroadcast(execution_id, "question_asked", {"question": question})
+                    answer = await _wait_for("answer", execution_id)
+                    if answer is None:
+                        events.set_execution_status(execution_id, "cancelled", "cancelled while waiting")
+                        return
+                    db.execute("UPDATE executions SET pending_json = '{}' WHERE id = ?", (execution_id,))
+                    events.set_execution_status(execution_id, "running")
+                    await events.abroadcast(execution_id, "question_answered", {"answer": answer[:500]})
+                    messages.append({"role": "user", "content": f"[user answer]: {answer}"})
+                    _record_message(conv_id, "user", answer, execution_id=execution_id)
+                    continue
+
+                need, reason = ws.needs_approval(name, args, auto_approve)
+                if need:
+                    db.execute("UPDATE executions SET pending_json = ?, updated_at = ? WHERE id = ?",
+                               (json.dumps({"tool": name, "arguments": args, "reason": reason,
+                                            "summary": summary}), db.now_ms(), execution_id))
+                    events.set_execution_status(execution_id, "waiting_approval")
+                    await events.abroadcast(execution_id, "approval_required",
+                                            {"tool": name, "arguments": args, "reason": reason})
+                    decision = await _wait_for("approval", execution_id)
+                    db.execute("UPDATE executions SET pending_json = '{}' WHERE id = ?", (execution_id,))
+                    if decision is None or not bool(decision):
+                        await events.abroadcast(execution_id, "tool_failed",
+                                                {"name": name, "error": "rejected by user"})
+                        messages.append({"role": "user",
+                                         "content": f"[tool {name} rejected by user — work around it]"})
+                        events.set_execution_status(execution_id, "running")
+                        continue
+                    events.set_execution_status(execution_id, "running")
+
+                result = await ws.run_tool(name, args, root)
+                if result.get("ok"):
+                    await events.abroadcast(execution_id, "tool_completed",
+                                            {"name": name, "summary": summary,
+                                             "output": result.get("output", "")[:6000],
+                                             "diff": result.get("diff", "")[:6000]})
+                    if result.get("diff"):
+                        db.execute(
+                            "INSERT INTO artifacts (id, execution_id, conversation_id, path, kind, summary, created_at)"
+                            " VALUES (?, ?, ?, ?, 'diff', ?, ?)",
+                            (db.new_id("art"), execution_id, conv_id,
+                             str(args.get("path", "")), summary[:300], db.now_ms()))
+                    messages.append({"role": "user",
+                                     "content": f"[tool {name} result ok]\n{result.get('output','')[:4000]}"})
+                else:
+                    await events.abroadcast(execution_id, "tool_failed",
+                                            {"name": name, "error": result.get("output", "")[:2000]})
+                    messages.append({"role": "user",
+                                     "content": f"[tool {name} FAILED]\n{result.get('output','')[:4000]}"})
+                # Unproductive-loop breaker: identical consecutive tool
+                # outputs mean no progress — stop and report honestly.
+                recent = [m["content"] for m in messages if m["content"].startswith("[tool ")][-3:]
+                if len(recent) == 3 and recent[0] == recent[1] == recent[2]:
+                    await events.abroadcast(execution_id, "tool_failed",
+                                            {"name": name,
+                                             "error": "same result 3x in a row — stopping to avoid an unproductive loop"})
+                    messages.append({"role": "user",
+                                     "content": "[SYSTEM] You produced the identical tool result three times. "
+                                                "Summarize what was accomplished, what failed with the exact "
+                                                "error, and what is needed next — then stop calling tools."})
+                    stuck = True
+                    break
+            if stuck:
+                break
+        else:
+            messages.append({"role": "user", "content": "[step budget reached — wrap up]"})
+
+        # Verification pass: report workspace state honestly.
+        events.set_execution_status(execution_id, "verifying")
+        await events.abroadcast(execution_id, "verification_started", {})
+        verify_out = await _verify_workspace(root)
+        await events.abroadcast(execution_id, "verification_result", verify_out)
+        events.set_execution_status(execution_id, "completed")
+        await events.abroadcast(execution_id, "turn_completed",
+                                {"message_id": msg_id, "verification": verify_out})
+        _finalize_message(msg_id, assistant_buf or "*Done.*")
+    finally:
+        await clear_control(execution_id)
+
+
+async def _verify_workspace(root) -> dict:
+    """Best-effort checks: git status + common test/build entrypoints (read-only)."""
+    checks: dict = {}
+    try:
+        entries = [p.name for p in root.iterdir()][:50]
+        checks["files"] = len(entries)
+        pkg = root / "package.json"
+        if pkg.exists():
+            checks["node_project"] = True
+        py = list(root.glob("pytest.ini")) + list(root.glob("pyproject.toml"))
+        if py:
+            checks["python_project"] = True
+        st = await ws.run_tool("git_status", {}, root)
+        checks["git"] = (st.get("output", "")[:500])
+    except Exception as exc:
+        checks["error"] = str(exc)[:500]
+    return checks
+
+
+def _finalize_message(msg_id: str, content: str, status: str = "done") -> None:
+    db.execute("UPDATE messages SET content = ?, status = ? WHERE id = ?",
+               (content[:200_000], status, msg_id))
