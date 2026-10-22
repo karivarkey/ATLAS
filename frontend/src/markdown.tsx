@@ -3,7 +3,7 @@ import React, { useState } from 'react'
 // Minimal streaming-safe markdown: code fences (partial ok), inline code,
 // bold, italic, links, headings, lists, tables. No raw HTML is ever injected.
 export function Markdown({ text }: { text: string }) {
-  const blocks = splitBlocks(text)
+  const blocks = dedupe(splitBlocks(text))
   return (
     <div className="md">
       {blocks.map((b, i) => (
@@ -11,6 +11,21 @@ export function Markdown({ text }: { text: string }) {
       ))}
     </div>
   )
+}
+
+// Drop exact-duplicate consecutive blocks (models sometimes repeat a
+// summary across steps; the persisted message keeps everything, the
+// view stays readable).
+function dedupe(blocks: Block[]): Block[] {
+  const out: Block[] = []
+  let prev = ''
+  for (const b of blocks) {
+    const key = JSON.stringify(b)
+    if (key === prev) continue
+    prev = key
+    out.push(b)
+  }
+  return out
 }
 
 type Block =

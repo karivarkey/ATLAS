@@ -24,6 +24,7 @@ interface ChatState {
   stream: StreamState | null
   execution: ExecutionSnapshot | null
   scrollKey: number
+  completedAt: number | null
 }
 
 interface Store {
@@ -56,7 +57,7 @@ interface Store {
 }
 
 function emptyChat(): ChatState {
-  return { messages: [], stream: null, execution: null, scrollKey: 0 }
+  return { messages: [], stream: null, execution: null, scrollKey: 0, completedAt: null }
 }
 
 export const useStore = create<Store>((set, get) => ({
@@ -96,7 +97,8 @@ export const useStore = create<Store>((set, get) => ({
         chats: {
           ...s.chats,
           [id]: { ...(s.chats[id] || emptyChat()), messages,
-                   execution: status.active_execution, stream: null },
+                   execution: status.active_execution, stream: null,
+                   completedAt: null },
         },
       }))
       // Reconnect: the useExecutionStream hook replays missed events and
@@ -169,6 +171,7 @@ export const useStore = create<Store>((set, get) => ({
           ...(s.chats[convId] || emptyChat()),
           execution: ex,
           stream: { text: '', tools: [], status: 'queued', pending: {} },
+          completedAt: null,
         },
       },
     }))

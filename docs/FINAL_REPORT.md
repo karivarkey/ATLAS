@@ -40,6 +40,7 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | Browser E2E | `bun e2e/e2e.mjs` (Playwright/Chromium) | **8/8 passed** (boot, CRUD, picker, switch, stream, done, refresh, no errors) |
 | Live Go catalog | `python tests/check_live.py` (Hermes-sourced key) | **live, not stale, 36 chat models**, real ids + per-model protocols, **0 ollama entries** |
 | muse-spark retry (your failing case) | `python tests/e2e_musespark.py` | **PASS in 4 steps**: Responses API + real `shell_exec`, `exit=0` |
+| UI duplication + activity (your screenshot) | `bun e2e/ui_check.mjs` | **PASS**: answer renders once, pill auto-dismisses, no errors |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
 
 ## Honest limitations

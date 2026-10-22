@@ -1,7 +1,7 @@
 import {
   AlertTriangle, Check, ChevronDown, CircleStop, FileDiff, Loader2, MessageSquarePlus,
   Pause, Play, RotateCcw, Send, Settings as SettingsIcon, PanelRight, Search,
-  SquarePen, Trash2, X,
+  SquarePen, Trash2, Wrench, X,
 } from 'lucide-react'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ChatMessage } from './api'
@@ -208,7 +208,7 @@ function ChatView({ convId }: { convId: string }) {
         chats: {
           ...s.chats,
           [convId]: {
-            ...(s.chats[convId] || { messages: [], stream: null, execution: null, scrollKey: 0 }),
+            ...(s.chats[convId] || { messages: [], stream: null, execution: null, scrollKey: 0, completedAt: null }),
             messages: [...(s.chats[convId]?.messages || []),
               { id: `local-${Date.now()}`, role: 'user', content: text,
                 model: '', execution_id: '', status: 'done', created_at: Date.now() } as ChatMessage],
@@ -248,13 +248,7 @@ function ChatView({ convId }: { convId: string }) {
             </div>
           </div>
         )}
-        {stream && stream.tools.length > 0 && (
-          <div className="tools">
-            {stream.tools.map((t, i) => (
-              <ToolCard key={i} tool={t} />
-            ))}
-          </div>
-        )}
+        {stream && <Activity convId={convId} executionId={executionId} />}
         {stream && ['waiting_input', 'waiting_approval'].includes(stream.status) && (
           <PendingCard convId={convId} executionId={executionId!} stream={stream} />
         )}
@@ -362,8 +356,66 @@ function PendingCard({ convId, executionId, stream }: { convId: string; executio
   )
 }
 
-function RetryButton({ executionId }: { executionId: string | null }) {
-  if (!executionId) return null
+/* ---------------- Activity: one live tool pill, auto-dismiss, history behind a toggle ---------------- */
+
+function Activity({ convId, executionId }: { convId: string; executionId: string | null }) {
+  const stream = useStore((s) => s.chats[convId]?.stream)
+  const completedAt = useStore((s) => s.chats[convId]?.completedAt)
+  const [dismissed, setDismissed] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+
+  useEffect(() => {
+    setDismissed(false)
+    setShowHistory(false)
+  }, [executionId])
+
+  useEffect(() => {
+    if (!completedAt) return
+    const t = setTimeout(() => setDismissed(true), 5000)
+    return () => clearTimeout(t)
+  }, [completedAt])
+
+  if (!stream || stream.tools.length === 0) return null
+  const running = [...stream.tools].reverse().find((t) => t.status === 'running')
+  const done = stream.tools.filter((t) => t.status !== 'running')
+  const failed = done.filter((t) => t.status === 'failed').length
+
+  return (
+    <div className="activity">
+      {running ? (
+        <div className="activity-pill running" title={running.summary}>
+          <Loader2 size={13} className="spin" />
+          <Wrench size={13} />
+          <span className="activity-text">{running.summary}</span>
+        </div>
+      ) : !dismissed && done.length > 0 ? (
+        <div className="activity-pill done">
+          <Check size={13} />
+          <span className="activity-text">
+            {done.length} step{done.length === 1 ? '' : 's'}
+            {failed > 0 ? ` · ${failed} failed` : ''}
+          </span>
+        </div>
+      ) : null}
+      {done.length > 0 && (
+        <div className="activity-history">
+          <button className="history-toggle" onClick={() => setShowHistory((v) => !v)}>
+            {showHistory ? 'Hide' : 'Show'} tool calls ({done.length})
+          </button>
+          {showHistory && (
+            <div className="tools">
+              {done.map((t, i) => (
+                <ToolCard key={i} tool={t} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RetryButton({ executionId }: { executionId: string | null }) {  if (!executionId) return null
   return (
     <button className="btn sm" onClick={() => api.retry(executionId).catch((e) => alert(e.message))}>
       <RotateCcw size={13} /> Retry

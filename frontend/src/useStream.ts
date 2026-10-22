@@ -32,12 +32,19 @@ export function useExecutionStream(convId: string | null, executionId: string | 
           }
         }
         if (doneRef.current) {
-          // Refresh persisted messages so the final assistant text is durable.
+          // Refresh persisted messages so the final assistant text is durable,
+          // and drop the streamed text (the persisted message now owns it —
+          // rendering both would duplicate the answer).
           const { messages } = await api.listMessages(convId)
           useStore.setState((s) => ({
             chats: { ...s.chats, [convId]: { ...(s.chats[convId] || { messages: [], stream: null,
-              execution: null, scrollKey: 0 }), messages,
-              execution: null, scrollKey: (s.chats[convId]?.scrollKey || 0) + 1 } },
+              execution: null, scrollKey: 0, completedAt: null }), messages,
+              execution: null,
+              stream: s.chats[convId]?.stream
+                ? { ...s.chats[convId]!.stream!, text: '' }
+                : null,
+              completedAt: Date.now(),
+              scrollKey: (s.chats[convId]?.scrollKey || 0) + 1 } },
           }))
           return
         }
@@ -61,6 +68,10 @@ export function useExecutionStream(convId: string | null, executionId: string | 
               useStore.setState((s) => ({
                 chats: { ...s.chats, [convId]: { ...(s.chats[convId]!),
                   messages, execution: null,
+                  stream: s.chats[convId]!.stream
+                    ? { ...s.chats[convId]!.stream!, text: '' }
+                    : null,
+                  completedAt: Date.now(),
                   scrollKey: s.chats[convId]!.scrollKey + 1 } },
               }))
             }
