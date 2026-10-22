@@ -11,6 +11,9 @@ from fastapi.staticfiles import StaticFiles
 from . import config, db
 from .routers import conversations, executions
 from .routers import memory as memory_router
+from .routers import notes as notes_router
+from .routers import tasks as tasks_router
+from .routers import onboarding as onboarding_router
 from .routers import stt as stt_router
 from .routers.workspaces import router as workspaces_router, settings_router
 from .services import executions as exec_manager
@@ -29,6 +32,7 @@ async def lifespan(app: FastAPI):
     try:
         from .services import dream as _dream
         from .services import indexer as _indexer
+        from .services import maintenance as _maint
         from .services import memory_files as _mf
         _mf.read_file("SOUL.md")
         _mf.read_file("USER.md")
@@ -37,10 +41,11 @@ async def lifespan(app: FastAPI):
             print(f"[atlas] memory recover: {rec}")
         app.state.indexer_task = _asyncio.create_task(_indexer.worker())
         app.state.dream_task = _asyncio.create_task(_dream.scheduler())
+        app.state.maint_task = _asyncio.create_task(_maint.loop())
     except Exception as exc:
         print(f"[atlas] memory startup note: {exc}")
     yield
-    for attr in ("indexer_task", "dream_task"):
+    for attr in ("indexer_task", "dream_task", "maint_task"):
         task = getattr(app.state, attr, None)
         if task:
             task.cancel()
@@ -58,8 +63,11 @@ app.add_middleware(
 
 app.include_router(conversations.router)
 app.include_router(executions.router)
+app.include_router(notes_router.router)
+app.include_router(tasks_router.router)
 app.include_router(stt_router.router)
 app.include_router(memory_router.router)
+app.include_router(onboarding_router.router)
 app.include_router(workspaces_router)
 app.include_router(settings_router)
 

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .. import config
 from . import webtools
+from .noteagent import NOTETASK_TOOL_SCHEMAS
 
 TOOL_SCHEMAS = [
     {
@@ -101,7 +102,7 @@ TOOL_SCHEMAS = [
         "description": "Read one consolidated memory record by id.",
         "parameters": {"memory_id": "record id"},
     },
-] + webtools.WEB_TOOL_SCHEMAS
+] + webtools.WEB_TOOL_SCHEMAS + NOTETASK_TOOL_SCHEMAS
 
 DESTRUCTIVE_PATTERNS = re.compile(
     r"(rm\s+-rf|rmdir\s+/s|del\s+/[fs]|format\s+[a-z]:|mkfs|shutdown|reboot|:?\(\)\s*\{)",
@@ -193,6 +194,10 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"History search `{str(args.get('query', ''))[:100]}`"
     if name in ("get_source_message", "get_conversation_context", "get_memory_record"):
         return f"{name}"
+    if name in ("note_read", "task_get"):
+        return f"{name} `{str(args.get('path', args.get('task_id', '')))[:100]}`"
+    if name in ("note_write", "task_update"):
+        return f"{name} `{str(args.get('path', args.get('task_id', '')))[:100]}`"
     return name
 
 
@@ -202,8 +207,14 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
     if name == "ask_user":
         return False, ""
     if name in ("search_memory", "search_chat_history", "get_source_message",
-                "get_conversation_context", "get_memory_record"):
-        return False, ""  # read-only memory retrieval
+                "get_conversation_context", "get_memory_report", "get_memory_record",
+                "note_read", "task_get"):
+        return False, ""  # read-only retrieval
+    if name in ("note_write", "task_update"):
+        # Vault/task writes: follow the workspace auto-approve policy; the
+        # vault service additionally enforces version-checked writes.
+        return (not auto_approve,
+                "" if auto_approve else "Note/task write requires approval.")
     if name in ("web_search", "web_fetch", "web_research"):
         # Read-only network retrieval. Results are untrusted third-party
         # data; the agent prompt requires treating them as such.
@@ -220,7 +231,7 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
     return True, f"Unknown tool '{name}' requires approval."
 
 
-async def run_tool(name: str, args: dict, root: Path) -> dict:
+async def run_tool(name: str, args: dict, root: Path, execution_id: str = "") -> dict:
     """Execute a tool. Returns {'ok': bool, 'output': str, 'diff': str?}."""
     if name in ("web_search", "web_fetch", "web_research"):
         return await webtools.run_web_tool(name, args)
@@ -234,6 +245,14 @@ async def run_tool(name: str, args: dict, root: Path) -> dict:
         if name == "get_memory_report":
             name = "get_memory_record"
         return await _memtools.run_memory_tool(name, args, scope)
+    if name in ("note_read", "note_write", "task_get", "task_update"):
+        from . import noteagent as _na
+        from . import memory as _scope_of
+        try:
+            scope = _scope_of.scope_of(root.name)
+        except Exception:
+            scope = "user:default"
+        return await _na.run_notetask_tool(name, args, scope, execution_id)
     try:
         if name == "fs_list":
             target = resolve(root, str(args.get("path", ".")))

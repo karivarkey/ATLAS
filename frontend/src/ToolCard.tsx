@@ -1,6 +1,6 @@
 import {
   AlertTriangle, Brain, CheckCircle2, ChevronDown, ChevronRight, CircleDashed,
-  FileDiff, FileText, Globe, History, Loader2, Database,
+  ClipboardList, FileDiff, FileText, Globe, History, Loader2, Database,
   Search, Terminal, Wrench, XCircle,
 } from 'lucide-react'
 import { useState } from 'react'
@@ -14,6 +14,8 @@ const ICONS: Record<string, any> = {
   search_memory: Brain, search_chat_history: History,
   get_source_message: FileText, get_conversation_context: FileText,
   get_memory_record: Database,
+  note_read: FileText, note_write: FileDiff,
+  task_get: ClipboardList, task_update: ClipboardList,
   ask_user: AlertTriangle,
 }
 

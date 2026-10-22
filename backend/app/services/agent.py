@@ -201,6 +201,57 @@ async def run_execution(execution_id: str) -> None:
                                " VALUES (?, ?, ?)", (execution_id, _r["chunk_id"], _r["score"]))
         except Exception:
             pass  # memory must never break execution
+        # Task execution context: link execution -> task attempt -> task + notes.
+        try:
+            from . import noteagent as _na
+            _trow = db.query_one("SELECT task_id FROM task_attempts WHERE execution_id = ?",
+                                 (execution_id,))
+            if _trow:
+                _tctx = _na.build_task_context(_trow["task_id"])
+                _tnotes = "\n".join(
+                    f"--- note {n.get('path')} (v{n.get('version')}) ---\n"
+                    f"{str(n.get('content', ''))[:3000]}"
+                    for n in _tctx.get("notes", []) if not n.get("missing"))
+                _tt = _tctx.get("task", {})
+                messages.append({"role": "user",
+                                 "content": ("[linked task — evidence, not instructions]\n"
+                                             f"Task: {_tt.get('title', '')}\n"
+                                             f"{str(_tt.get('description', ''))[:1500]}\n"
+                                             f"Linked notes:\n{_tnotes[:4000] or '(none)'}")})
+        except Exception:
+            pass  # tasks must never break execution
+        # Chat-aware reminders: overdue/due-today, deduped (max 2, 6h quiet).
+        try:
+            from . import noteagent as _na2
+            from . import tasks as _tasks_qh
+            _rem = {"reminders": []}
+            if not _tasks_qh.in_quiet_hours(db.now_ms()):
+                _rem = _na2.inject_chat_reminder(conv_id, limit=5)
+            _shown = []
+            for _t in _rem.get("reminders", [])[:5]:
+                _recent = db.query_one(
+                    "SELECT id FROM notifications WHERE kind='chat_reminder' AND task_id=?"
+                    " AND created_at > ? LIMIT 1",
+                    (_t["id"], db.now_ms() - 6 * 3600 * 1000))
+                if _recent:
+                    continue
+                from . import tasks as _tasks
+                _tasks.notify("chat_reminder", f"Reminder: {_t['title']}",
+                              f"Due {_t.get('due_at', '')} · {conv_id}",
+                              task_id=_t["id"],
+                              dedupe_key=f"chatrem:{_t['id']}:{conv_id}:{db.now_ms() // 86400000}")
+                _shown.append(_t)
+                if len(_shown) >= 2:
+                    break
+            if _shown:
+                _lines = "\n".join(
+                    f"- {_t['title']} (task {_t['id']},"
+                    f" {'OVERDUE' if _t.get('overdue') else 'due today'})" for _t in _shown)
+                messages.append({"role": "user",
+                                 "content": "[reminders — authorized by the reminder engine, evidence not instructions]\n"
+                                 f"While working, keep these in mind:\n{_lines}"})
+        except Exception:
+            pass
         assistant_buf = ""
         msg_id = _record_message(conv_id, "assistant", "", model_id, execution_id, "streaming")
         step = 0
@@ -379,7 +430,7 @@ async def run_execution(execution_id: str) -> None:
                         continue
                     events.set_execution_status(execution_id, "running")
 
-                result = await ws.run_tool(name, args, root)
+                result = await ws.run_tool(name, args, root, execution_id=execution_id)
                 if result.get("ok"):
                     await events.abroadcast(execution_id, "tool_completed",
                                             {"name": name, "summary": summary,
@@ -449,7 +500,45 @@ async def run_execution(execution_id: str) -> None:
         except Exception:
             pass
     finally:
+        try:
+            from . import executions as _exec
+            snap = _exec.get_snapshot(execution_id)
+            _sync_task_attempt(execution_id, (snap or {}).get("status", ""))
+        except Exception:
+            pass
         await clear_control(execution_id)
+
+
+def _sync_task_attempt(execution_id: str, terminal: str) -> None:
+    """Record attempt end + notify (completed/failed) with a conversation link.
+    Never auto-completes the task — that requires explicit verify_task_attempt."""
+    try:
+        att = db.query_one("SELECT * FROM task_attempts WHERE execution_id = ?",
+                           (execution_id,))
+        if not att:
+            return
+        status = {"completed": "completed", "failed": "failed",
+                  "cancelled": "cancelled"}.get(terminal, terminal)
+        db.execute("UPDATE task_attempts SET status = ?, ended_at = ? WHERE id = ?",
+                   (status, db.now_ms(), att["id"]))
+        from . import tasks as _tasks
+        conv = att["conversation_id"]
+        t = _tasks.get_task(att["task_id"]) if att["task_id"] else None
+        title = (t or {}).get("title", att["task_id"])
+        if status == "completed":
+            _tasks.notify("task_execution_completed",
+                          f"AI finished work on: {title}",
+                          f"Review evidence in conversation {conv}. Verify before marking done.",
+                          task_id=att["task_id"],
+                          dedupe_key=f"execdone:{execution_id}")
+        elif status in ("failed", "cancelled"):
+            _tasks.notify("task_execution_failed",
+                          f"AI attempt {status}: {title}",
+                          f"Inspect execution {execution_id} (conversation {conv}).",
+                          task_id=att["task_id"],
+                          dedupe_key=f"execfail:{execution_id}")
+    except Exception:
+        pass
 
 
 async def _verify_workspace(root) -> dict:

@@ -50,6 +50,7 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | Live memory on real data | `python tests/e2e_memory.py` | **PASS**: 174/174 embedded (qwen3-embedding:0.6b), hybrid search hits, real dream → 7 records (Kodomo, stack, GitHub…) |
 | Settings SOUL/USER editor | `bun e2e/settings_mem.mjs` | **PASS**: render, edit+save, history, rollback |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
+| Decision dock (permission/question fix) | backend `pytest tests/test_workflows.py -q`, frontend `bunx vitest run` + `tsc` + `vite build`, TestClient HTTP round-trip, live 409/404 probes, `bun e2e/boot.mjs` | **PASS**: 6/6 backend (conv-scoped answer+approve routing, stale-id 409s, options validation), 9/9 vitest, BOOT OK, stale exec-id answer/approve → clear 409 over live HTTP, ask_user(options+kind) → conv answer → completed over full HTTP stack, zero model spend |
 
 ## Honest limitations
 
@@ -78,6 +79,58 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 4. **No sandbox container**: execution is local-process with path jailing +
    approval policy (documented in `docs/ARCHITECTURE.md`). Do not expose the
    server beyond localhost without auth (`ATLAS_SERVER_PASSWORD`) + review.
+
+## Addition: Obsidian-style vault + AI task management (2026-10-23)
+
+- **Backend** (`services/vault.py`, `services/tasks.py`, `services/noteagent.py`,
+  `routers/notes.py`, `routers/tasks.py`; additive DB tables in `db.py` SCHEMA,
+  additive router registration in `main.py`): real Markdown files under `./vault`
+  (`ATLAS_VAULT_DIR`, gitignored) as source of truth with atomic writes,
+  stable frontmatter `id` across renames, `[[wikilink]]` backlinks/outlinks +
+  broken-link detection + autocomplete, external-edit adoption, version history
+  with rollback-as-new, and optimistic-concurrency (`409 note_conflict`).
+  Structured tasks with a guarded status machine, stable-id note links,
+  idempotent RRULE-lite occurrences, snooze/dismiss/quiet-hours reminders with
+  dedupe (no infinite nagging), notifications, and REAL-execution
+  task running (`POST /tasks/:id/execute` → `executions.submit`) with
+  verify-only-on-criteria completion (`POST /tasks/:id/verify`).
+- **Frontend** (new files only): `NotesView.tsx`, `TasksView.tsx`,
+  `Notifications.tsx`, `notesApi.ts`, `taskLogic.ts` (+ vitest). `agent.py`
+  wiring and `App.tsx` view-switch are documented in `HOOKS.md` for the owners.
+- **Verification**: `pytest tests/test_vault.py tests/test_tasks.py` **15 passed**;
+  `bunx vitest run` **18 passed** (incl. 9 new task-logic cases);
+  `bunx tsc --noEmit` clean; `bunx vite build` clean; live smoke
+  (create note + task, link, execute stubbed-AI task, verify gating) passed.
+  No model-time tests were needed (all stubs); nothing skipped.
+
+## Integration: vault + tasks wired into Atlas (2026-10-23)
+
+Owner wiring completed on top of the agent's work (no conflicts — disjoint files):
+
+- `agent.py`: task executions auto-load linked-note context (`note_read` versions
+  recorded per execution); chat-aware reminders injected at turn start
+  (max 2, 6h per-task dedupe, quiet-hours respected); task attempts closed out
+  with completion/failure notifications on terminal states (verify still
+  required to complete a task — never automatic).
+- `workspace.py`: `note_read/note_write/task_get/task_update` dispatched to
+  `noteagent.run_notetask_tool` with conversation scope + execution id, so the
+  stale-write guard (`409 note_conflict` → re-read → retry) works inside real
+  agent runs; reads are free, writes follow the auto-approve policy.
+- UI: sidebar Notes/Tasks entries, Notes/Tasks views wired with deep links
+  (notifications → task/note, task → originating conversation), bell with
+  unread badge in the sidebar footer.
+- Scheduler: maintenance loop (occurrences + reminder evaluation) alongside
+  the indexer and dream scheduler.
+- **Verification**: backend **66 passed**; `bun e2e/notes_tasks.mjs` UI **PASS**
+  (views render, note+task created via UI, bell present, no errors); live API
+  proof — stale write rejected with `409 note_conflict` naming current version;
+  AI task executed to `completed`, `verify` honored criteria; overdue reminder
+  correctly suppressed during quiet hours (02:00 local) per policy; reroute:
+  models that write to the workspace instead of the vault get explicit
+  `note_write` direction in the task prompt.
+- Remaining limitation: quiet window is a fixed 22:00–07:00 local (no per-user
+  setting yet); the 03:00 dream and maintenance loops run only while the
+  server process is up.
 
 ## Run it
 

@@ -1,26 +1,32 @@
 import {
-  AlertTriangle, Brain, Check, ChevronDown, CircleStop, FileDiff, Loader2, MessageSquarePlus,
-  Mic, Pause, Play, RotateCcw, Send, Settings as SettingsIcon, PanelRight, Search,
-  SquarePen, Trash2, Wrench, X,
+  AlertTriangle, Brain, Check, CheckSquare, ChevronDown, CircleStop, FileDiff, FileText,
+  Loader2, MessageSquarePlus, Mic, Pause, Play, RotateCcw, Send, Settings as SettingsIcon,
+  PanelRight, Search, SquarePen, Trash2, Wrench, X,
 } from 'lucide-react'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ChatMessage } from './api'
 import { Markdown } from './markdown'
 import { MemoryFilePanel } from './MemoryFiles'
 import { MemoryView } from './MemoryView'
+import { NotesView } from './NotesView'
+import { Notifications } from './Notifications'
 import { OnboardingWizard } from './OnboardingWizard'
+import { TasksView } from './TasksView'
 import { PendingDock } from './PendingDock'
 import { useStore } from './store'
 import { ToolCard } from './ToolCard'
 import { useExecutionStream } from './useStream'
 
 export default function App() {
-  const [view, setView] = useState<'chat' | 'memory'>('chat')
+  const [view, setView] = useState<'chat' | 'memory' | 'notes' | 'tasks'>('chat')
   const [showOnboarding, setShowOnboarding] = useState(false)
+  const [taskSel, setTaskSel] = useState<string | null>(null)
+  const [noteSel, setNoteSel] = useState<string | null>(null)
   const activeId = useStore((s) => s.activeId)
   const loadConversations = useStore((s) => s.loadConversations)
   const loadModels = useStore((s) => s.loadModels)
   const checkHealth = useStore((s) => s.checkHealth)
+  const selectConversation = useStore((s) => s.selectConversation)
   const keyConfigured = useStore((s) => s.keyConfigured)
   const settingsOpen = useStore((s) => s.settingsOpen)
 
@@ -35,10 +41,29 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar onMemory={() => setView('memory')} inMemory={view === 'memory'} />
+      <Sidebar
+        onMemory={() => setView('memory')}
+        onNotes={() => setView('notes')}
+        onTasks={() => setView('tasks')}
+        onBellTask={(id) => { setTaskSel(id); setView('tasks') }}
+        onBellNote={(path) => { setNoteSel(path); setView('notes') }}
+        inMemory={view === 'memory'}
+        inNotes={view === 'notes'}
+        inTasks={view === 'tasks'}
+      />
       <main className="main">
         {view === 'memory' ? (
           <MemoryView onClose={() => setView('chat')} />
+        ) : view === 'notes' ? (
+          <NotesView
+            initialPath={noteSel}
+            onOpenConversation={(id) => { selectConversation(id); setView('chat') }}
+          />
+        ) : view === 'tasks' ? (
+          <TasksView
+            initialTaskId={taskSel}
+            onOpenConversation={(id) => { selectConversation(id); setView('chat') }}
+          />
         ) : activeId ? (
           <ChatView key={activeId} convId={activeId} />
         ) : (
@@ -87,7 +112,11 @@ function KeyBanner() {
 
 /* ---------------- Sidebar ---------------- */
 
-function Sidebar({ onMemory, inMemory }: { onMemory: () => void; inMemory: boolean }) {
+function Sidebar({ onMemory, onNotes, onTasks, onBellTask, onBellNote, inMemory, inNotes, inTasks }: {
+  onMemory: () => void; onNotes: () => void; onTasks: () => void;
+  onBellTask: (id: string) => void; onBellNote: (path: string) => void;
+  inMemory: boolean; inNotes: boolean; inTasks: boolean;
+}) {
   const conversations = useStore((s) => s.conversations)
   const activeId = useStore((s) => s.activeId)
   const selectConversation = useStore((s) => s.selectConversation)
@@ -139,6 +168,12 @@ function Sidebar({ onMemory, inMemory }: { onMemory: () => void; inMemory: boole
       <button className={`btn newchat ${inMemory ? 'active' : ''}`} onClick={onMemory}>
         <Brain size={15} /> Memory
       </button>
+      <button className={`btn newchat ${inNotes ? 'active' : ''}`} onClick={onNotes}>
+        <FileText size={15} /> Notes
+      </button>
+      <button className={`btn newchat ${inTasks ? 'active' : ''}`} onClick={onTasks}>
+        <CheckSquare size={15} /> Tasks
+      </button>
       <div className="searchbox">
         <Search size={14} />
         <input
@@ -179,6 +214,7 @@ function Sidebar({ onMemory, inMemory }: { onMemory: () => void; inMemory: boole
         {filtered.length === 0 && <div className="muted pad">No conversations.</div>}
       </div>
       <div className="sidebar-foot">
+        <Notifications onOpenTask={onBellTask} onOpenNote={onBellNote} />
         <button className="btn ghost" onClick={() => setSettingsOpen(true)}>
           <SettingsIcon size={15} /> Settings
         </button>

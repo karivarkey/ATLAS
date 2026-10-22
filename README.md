@@ -101,6 +101,49 @@ exact error instead of pretending to be current.
   streaming composer, tool cards, execution drawer, settings, SSE hook with
   reconnect + dedupe.
 
+## Knowledge base (Obsidian-style vault) + AI task management
+
+Vault root is `./vault` (override with `ATLAS_VAULT_DIR`; gitignored). Real
+Markdown files are the source of truth; SQLite holds an operational index.
+
+```sh
+cd backend && python -m pytest tests/test_vault.py tests/test_tasks.py -q
+cd ../frontend && bunx vitest run && bunx tsc --noEmit && bunx vite build
+```
+
+- Notes: `POST/GET/PUT/DELETE /api/v1/notes` (`?path=`), `POST /move`,
+  `GET /tree`, `GET /search?q=`, `GET /suggest?prefix=` (wikilink
+  autocomplete), `GET /broken`, `GET /versions`, `GET /versions/content`,
+  `POST /rollback` (lands as a new version), `POST /sync` (adopts external
+  edits, imports new files, reports missing, cleans crashed-write tmp files).
+  Optimistic concurrency via `expected_version`/`expected_hash` → `409
+  note_conflict` naming the current version; stable frontmatter `id` survives
+  renames; renames rewrite `[[links]]` in linking notes as new versions;
+  external on-disk edits are adopted as `external` versions on read/sync.
+- Tasks: `POST/GET/PATCH/DELETE /api/v1/tasks`, `POST /tasks/:id/transition`
+  (guarded state machine), note linking (`POST/DELETE /tasks/:id/notes`,
+  keyed by stable note id so renames don't break links), history,
+  idempotent recurrence (`POST /tasks/:id/occurrences/generate` —
+  `daily|weekly|monthly|weekdays|interval:N`, unique per series+day),
+  reminders (`POST /reminders`, `/snooze`, `/dismiss`, `POST
+  /reminders/evaluate` with snooze/dismiss/quiet-hours gating and
+  one-unread-per-task-per-day dedupe), notifications (`GET /notifications`,
+  `/unread-count`, `/read`, `/dismiss`).
+- AI execution: `POST /tasks/:id/execute` runs a REAL execution via
+  `services.executions.submit` (task + linked notes + memory as context) and
+  records an attempt; `POST /tasks/:id/verify` completes the task ONLY when
+  the execution terminally `completed` AND explicit criteria + evidence are
+  supplied — model text alone never completes a task.
+- Frontend (new files only): `NotesView.tsx` (tree + source/preview editor
+  with autosave/dirty indicator/word count + backlinks/outlinks/linked-tasks),
+  `TasksView.tsx` (Today/Overdue/Waiting/Inbox/Project filters, quick
+  complete, recurrence editor, reminder controls, Let-AI-do-this with
+  verify-to-complete), `Notifications.tsx` (badge, polling dropdown, deep
+  links), `notesApi.ts`, `taskLogic.ts` (+ vitest). See `HOOKS.md` for the
+  5-line `App.tsx` wiring snippet and the 3-line `agent.py` hooks
+  (`noteagent.build_task_context` / `inject_chat_reminder` /
+  `run_notetask_tool` — implemented, not yet wired in).
+
 ## Verification
 
 ```sh

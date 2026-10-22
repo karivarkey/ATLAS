@@ -234,6 +234,127 @@ CREATE TABLE IF NOT EXISTS execution_memory_refs (
     score REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (execution_id, chunk_id)
 );
+
+-- ============ Notes vault index (files in ./vault are source of truth) ============
+CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    path TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    file_mtime INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);
+
+CREATE TABLE IF NOT EXISTS note_versions (
+    id TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT 'user',
+    created_at INTEGER NOT NULL,
+    UNIQUE (note_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_note_versions_note ON note_versions(note_id, version);
+
+CREATE TABLE IF NOT EXISTS note_reads (
+    execution_id TEXT NOT NULL,
+    note_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content_hash TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (execution_id, note_id)
+);
+
+-- ============ Structured tasks ============
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'inbox',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    due_at INTEGER NOT NULL DEFAULT 0,
+    due_tz TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    source_conv TEXT NOT NULL DEFAULT '',
+    source_msg TEXT NOT NULL DEFAULT '',
+    recurrence TEXT NOT NULL DEFAULT '',
+    recur_end INTEGER NOT NULL DEFAULT 0,
+    recur_max INTEGER NOT NULL DEFAULT 0,
+    approval_required INTEGER NOT NULL DEFAULT 0,
+    eligibility TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, due_at);
+
+CREATE TABLE IF NOT EXISTS task_notes (
+    task_id TEXT NOT NULL,
+    note_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, note_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    actor TEXT NOT NULL DEFAULT 'user',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_history ON task_history(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS task_occurrences (
+    id TEXT PRIMARY KEY,
+    series_id TEXT NOT NULL,
+    occurrence_key TEXT NOT NULL,
+    due_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    created_at INTEGER NOT NULL,
+    UNIQUE (series_id, occurrence_key)
+);
+CREATE INDEX IF NOT EXISTS idx_occurrences_series ON task_occurrences(series_id, occurrence_key);
+
+CREATE TABLE IF NOT EXISTS task_attempts (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    criteria_json TEXT NOT NULL DEFAULT '{}',
+    evidence TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_task ON task_attempts(task_id, created_at);
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    fire_at INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    snoozed_until INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_task ON reminders(task_id, fire_at);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'reminder',
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL DEFAULT '',
+    note_id TEXT NOT NULL DEFAULT '',
+    dedupe_key TEXT UNIQUE,
+    status TEXT NOT NULL DEFAULT 'unread',
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, created_at);
 """
 
 
@@ -253,6 +374,9 @@ def connect() -> sqlite3.Connection:
             _conn.execute("ALTER TABLE conversations ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'user:default'")
         if "memory_excluded" not in cols:
             _conn.execute("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0")
+        ecol = [r["name"] for r in _conn.execute("PRAGMA table_info(executions)")]
+        if "system_prompt" not in ecol:
+            _conn.execute("ALTER TABLE executions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
         _conn.commit()
         return _conn
 

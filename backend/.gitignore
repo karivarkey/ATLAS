@@ -1,0 +1,2 @@
+# Local server secrets (never commit)
+.env.local
