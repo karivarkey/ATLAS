@@ -101,7 +101,6 @@ export const useStore = create<Store>((set, get) => ({
       }))
       // Reconnect: the useExecutionStream hook replays missed events and
       // dedupes by seq, so select only needs messages + snapshot here.
-      void ex
     } catch (e) {
       console.warn('select failed', e)
     }
