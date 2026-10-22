@@ -1,6 +1,6 @@
 import {
   AlertTriangle, Check, ChevronDown, CircleStop, FileDiff, Loader2, MessageSquarePlus,
-  Pause, Play, RotateCcw, Send, Settings as SettingsIcon, PanelRight, Search,
+  Mic, Pause, Play, RotateCcw, Send, Settings as SettingsIcon, PanelRight, Search,
   SquarePen, Trash2, Wrench, X,
 } from 'lucide-react'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
@@ -582,10 +582,54 @@ function DetailDrawer({ convId }: { convId: string }) {
 /* ---------------- Composer ---------------- */
 
 function Composer({ convId, draft, setDraft, send, sending, running, executionId }:
-  { convId: string; draft: string; setDraft: (s: string) => void; send: () => void;
+  { convId: string; draft: string; setDraft: React.Dispatch<React.SetStateAction<string>>; send: () => void;
     sending: boolean; running: boolean; executionId: string | null }) {
   const taRef = useRef<HTMLTextAreaElement>(null)
   const conv = useStore((s) => s.conversations.find((c) => c.id === convId))
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [voiceError, setVoiceError] = useState('')
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+
+  const toggleRecording = async () => {
+    setVoiceError('')
+    if (recording) {
+      recRef.current?.stop()
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      chunksRef.current = []
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        setRecording(false)
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        if (blob.size === 0) return
+        setTranscribing(true)
+        try {
+          const fd = new FormData()
+          fd.append('file', blob, 'voice.webm')
+          const res = await fetch('/api/v1/stt/transcribe', { method: 'POST', body: fd })
+          if (!res.ok) throw new Error((await res.text()).slice(0, 200))
+          const { text } = await res.json()
+          if (text) setDraft((d) => (d ? d + '\n' : '') + text)
+          else setVoiceError('No speech detected.')
+        } catch (e: any) {
+          setVoiceError(`Transcription failed: ${String(e.message || e).slice(0, 120)}`)
+        } finally {
+          setTranscribing(false)
+        }
+      }
+      recRef.current = rec
+      rec.start()
+      setRecording(true)
+    } catch {
+      setVoiceError('Microphone unavailable — check browser permission.')
+    }
+  }
 
   useEffect(() => {
     const el = taRef.current
@@ -624,6 +668,17 @@ function Composer({ convId, draft, setDraft, send, sending, running, executionId
         />
         <div className="composer-row">
           <span className="muted small">Enter ↵ send · Shift+Enter newline · Ctrl+/ focus</span>
+          <span className="composer-actions">
+            {voiceError && <span className="voice-error">{voiceError}</span>}
+            <button
+              className={`icon-btn mic ${recording ? 'rec' : ''}`}
+              title={recording ? 'Stop recording' : 'Voice input'}
+              onClick={toggleRecording}
+              disabled={transcribing}
+            >
+              {transcribing ? <Loader2 size={14} className="spin" /> : <Mic size={14} />}
+              {recording && <span className="rec-dot" />}
+            </button>
           {running && executionId ? (
             <button className="btn danger sm" onClick={() => api.stop(executionId)}>
               <CircleStop size={14} /> Stop
@@ -633,6 +688,7 @@ function Composer({ convId, draft, setDraft, send, sending, running, executionId
               {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send
             </button>
           )}
+          </span>
         </div>
       </div>
     </div>

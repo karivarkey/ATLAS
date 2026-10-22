@@ -44,6 +44,8 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | Web search + grounded answer | `python tests/e2e_web.py` | **PASS in 3 steps**: `web_search` → `web_fetch` (python.org) → cited 3.15.1 |
 | Self-hosted search (SearXNG) | local engine @ :8888 | **41 results**, JSON API enabled, no rate limits |
 | Deep research | `python tests/e2e_research.py` | **PASS in 3 steps**: `web_research` + fetch, 7 sources cited |
+| Voice input (AssemblyAI universal-2, en) | `python tests/e2e_voice.py` | **PASS**: SAPI speech → "Hello? Atlas, this is a voice test." |
+| 1.3 default task | `python tests/e2e_task.py` (`opencode-go/muse-spark-1.3-contributor`) | **PASS in 3 steps**: `exit=0`, `HELLO-ATLAS` |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
 
 ## Honest limitations

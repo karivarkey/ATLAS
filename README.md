@@ -34,6 +34,13 @@ search:
 
 If SearXNG is unreachable, search transparently falls back to DuckDuckGo
 (responses are labeled `[via duckduckgo fallback]`).
+
+## Voice input
+
+The composer has a mic button: record → audio posts to
+`POST /api/v1/stt/transcribe` → AssemblyAI (`universal-2`, English-only)
+returns text into the draft. Key lives in gitignored `backend/.env.local`
+(`ASSEMBLYAI_API_KEY`), never in the repo or browser.
 For frontend dev with hot reload:
 
 ```sh

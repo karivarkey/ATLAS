@@ -2,10 +2,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/
-workspaces/*/ 
+workspaces/*/
 !workspaces/.gitkeep
 node_modules/
 dist/
 .env
+.env.local
 *.log
 .DS_Store

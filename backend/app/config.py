@@ -36,7 +36,30 @@ def _read_hermes_go_key() -> str:
     return ""
 
 
+def _load_local_env() -> None:
+    """Load gitignored backend/.env.local (server-side secrets, never committed)."""
+    try:
+        from pathlib import Path as _P
+
+        env_file = _P(__file__).resolve().parent.parent / ".env.local"
+        if not env_file.exists():
+            return
+        for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k and v and k not in os.environ:
+                os.environ[k] = v
+    except Exception:
+        pass
+
+
+_load_local_env()
+
 OPENCODE_ZEN_API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "").strip() or _read_hermes_go_key()
+ASSEMBLYAI_API_KEY = os.environ.get("ASSEMBLYAI_API_KEY", "").strip()
 KEY_SOURCE = "env" if os.environ.get("OPENCODE_ZEN_API_KEY", "").strip() else (
     "hermes-env" if OPENCODE_ZEN_API_KEY else "none")
 OPENCODE_GO_BASE = os.environ.get(
@@ -46,7 +69,7 @@ OPENCODE_GO_MODELS_URL = f"{OPENCODE_GO_BASE}/models"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434").rstrip("/")
 
-DEFAULT_MODEL = os.environ.get("ATLAS_DEFAULT_MODEL", "opencode-go/glm-5.3-flash")
+DEFAULT_MODEL = os.environ.get("ATLAS_DEFAULT_MODEL", "opencode-go/muse-spark-1.3-contributor")
 CATALOG_TTL_SECONDS = int(os.environ.get("ATLAS_CATALOG_TTL", "3600"))
 CATALOG_TIMEOUT_SECONDS = float(os.environ.get("ATLAS_CATALOG_TIMEOUT", "20"))
 

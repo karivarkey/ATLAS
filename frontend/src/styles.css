@@ -216,6 +216,14 @@ body {
   width: 100%; border: 0; outline: 0; resize: none; font: inherit; background: transparent;
 }
 .composer-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+.composer-actions { display: flex; align-items: center; gap: 6px; }
+.icon-btn.mic { position: relative; border: 1px solid var(--line); border-radius: 8px; }
+.icon-btn.mic.rec { color: var(--err); border-color: var(--err); }
+.rec-dot {
+  position: absolute; top: 2px; right: 2px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--err); animation: pulse 1s infinite;
+}
+.voice-error { color: var(--err); font-size: 12px; }
 
 /* ---------- Markdown ---------- */
 .md-p { margin: 0 0 10px; }

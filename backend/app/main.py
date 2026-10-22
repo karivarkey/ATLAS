@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, db
 from .routers import conversations, executions
+from .routers import stt as stt_router
 from .routers.workspaces import router as workspaces_router, settings_router
 from .services import executions as exec_manager
 
@@ -37,6 +38,7 @@ app.add_middleware(
 
 app.include_router(conversations.router)
 app.include_router(executions.router)
+app.include_router(stt_router.router)
 app.include_router(workspaces_router)
 app.include_router(settings_router)
 
