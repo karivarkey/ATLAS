@@ -46,6 +46,37 @@ def test_text_tool_call_fallback_parsing(tmp_db):
     assert [c["name"] for c in extract_text_tool_calls(multi)] == ["fs_write", "shell_exec"]
 
 
+def test_catalog_caches_merged_view(tmp_db, monkeypatch):
+    """Refresh must persist live+ollama merged, so later cached reads validate both."""
+    import asyncio
+    from app.services import model_catalog
+
+    async def fake_live():
+        return [{"id": "opencode-go/m1", "name": "M1", "provider": "go",
+                 "protocol": "chat_completions", "endpoint": "http://x",
+                 "context_window": None, "supports_tools": True}]
+
+    async def fake_ollama():
+        return [{"id": "ollama/local", "name": "local", "provider": "ollama",
+                 "protocol": "ollama", "endpoint": "http://y",
+                 "context_window": None, "supports_tools": True}]
+
+    monkeypatch.setattr(model_catalog, "_fetch_live", fake_live)
+    monkeypatch.setattr(model_catalog, "_fetch_ollama", fake_ollama)
+    monkeypatch.setattr(model_catalog, "key_configured", lambda: True)
+
+    async def go():
+        first = await model_catalog.get_catalog(force_refresh=True)
+        assert first["source"] == "live"
+        second = await model_catalog.get_catalog()  # cached read
+        ids = [m["id"] for m in second["models"]]
+        assert "opencode-go/m1" in ids and "ollama/local" in ids
+        ok, _ = await model_catalog.validate_model("ollama/local")
+        assert ok
+
+    asyncio.run(go())
+
+
 def test_terminal_states_lock(tmp_db):
     cid = "conv_state"
     now = db.now_ms()

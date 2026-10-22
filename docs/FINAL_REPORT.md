@@ -29,23 +29,30 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 
 | Check | Command | Result |
 |---|---|---|
-| Backend unit + integration | `python -m pytest tests/ -q` (backend) | **20 passed** |
+| Backend unit + integration | `python -m pytest tests/ -q` (backend) | **21 passed** |
 | Frontend unit | `bunx vitest run` (frontend) | **4 passed** |
 | Typecheck + build | `bunx tsc --noEmit`, `bunx vite build` | clean, dist built |
 | API smoke | `python tests/smoke_live.py` | PASS |
 | Fake-model tool loop | `test_provider_loop.py` | file written on disk, completed |
 | Concurrency (2 chats, cancel isolation) | `test_concurrency.py` | **2 passed** |
 | Approval + pause/resume | `test_workflows.py` | **2 passed** |
-| Real task, local model | `python tests/e2e_task.py` (qwen2.5-coder:1.5b) | `exit=0`, `HELLO-ATLAS` in shell output |
+| Real task, 0.6b default model | `python tests/e2e_task.py` (`ollama/qwen3:0.6b`) | **PASS in 3 steps**: `exit=0`, `HELLO-ATLAS` |
 | Browser E2E | `bun e2e/e2e.mjs` (Playwright/Chromium) | **8/8 passed** (boot, CRUD, picker, switch, stream, done, refresh, no errors) |
+| Live Go catalog | `python tests/check_live.py` (Hermes-sourced key) | **live, not stale, 42 models**, real ids + per-model protocols |
+| Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |
 
 ## Honest limitations
 
-1. **No `OPENCODE_ZEN_API_KEY` in this environment** → OpenCode Go live models
-   not exercised; catalog correctly reports `stale:true` + error and serves
-   Ollama models. With a key configured, the same code path (Bearer + endpoint
-   map) is used — verify with `POST /api/v1/models/refresh`.
-2. **qwen2.5-coder:7b too slow here** (5.5 GB free RAM, CPU-heavy split;
+1. **OpenCode Go key is bridged from Hermes** (`%LOCALAPPDATA%\hermes\.env`,
+   `OPENCODE_GO_API_KEY`; explicit `OPENCODE_ZEN_API_KEY` env takes precedence).
+   Live catalog verified working (42 models, 2026-10-22). The key never leaves
+   the server: only `key_configured` is exposed to clients. If the Hermes file
+   is absent and no env var is set, the app degrades to Ollama-only with an
+   explicit stale-catalog error.
+2. **Default model is `ollama/qwen3:0.6b`** (local chat model, verified with a
+   real write+run task in 3 steps). Note `qwen3-embedding:0.6b` is an embedding
+   model and cannot do agent work — the similarly-named `qwen3:0.6b` is the
+   correct chat model.
    no output in 180 s) → standardized on 1.5b for live verification. 7b pulled
    and listed; usable on stronger hardware.
 3. **Small-model flailing**: 1.5b needed 50+ steps on first attempt (fixed by

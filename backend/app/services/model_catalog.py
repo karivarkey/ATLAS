@@ -156,7 +156,6 @@ async def get_catalog(force_refresh: bool = False) -> dict:
     if key_configured():
         try:
             live = await _fetch_live()
-            _write_cache(live)
             fetched_at = int(time.time())
         except Exception as exc:  # provider outage / auth / rate limit
             error = f"{type(exc).__name__}: {exc}"
@@ -166,10 +165,13 @@ async def get_catalog(force_refresh: bool = False) -> dict:
 
     ollama_models = await _fetch_ollama()
     if live:
-        merged = {m["id"]: m for m in live}
+        merged: dict[str, dict] = {m["id"]: m for m in live}
         for m in ollama_models:
             merged.setdefault(m["id"], m)
-        return {"models": sorted(merged.values(), key=lambda m: m["id"]),
+        merged_list = sorted(merged.values(), key=lambda m: m["id"])
+        _write_cache(merged_list)  # cache the merged view, not just live
+        fetched_at = int(time.time())
+        return {"models": merged_list,
                 "fetched_at": fetched_at, "stale": False, "error": "", "source": "live"}
     if cached:
         return {"models": cached, "fetched_at": fetched_at, "stale": True,

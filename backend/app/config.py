@@ -14,7 +14,31 @@ DATA_DIR = Path(os.environ.get("ATLAS_DATA_DIR", BASE_DIR / "data"))
 WORKSPACES_DIR = Path(os.environ.get("ATLAS_WORKSPACES_DIR", BASE_DIR / "workspaces"))
 DB_PATH = Path(os.environ.get("ATLAS_DB_PATH", DATA_DIR / "atlas.db"))
 
-OPENCODE_ZEN_API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "").strip()
+def _read_hermes_go_key() -> str:
+    """User-approved fallback: read OPENCODE_GO_API_KEY from the local
+    Hermes agent's .env (server-side only, never logged or sent to clients).
+    Explicit OPENCODE_ZEN_API_KEY env var always takes precedence."""
+    try:
+        from pathlib import Path as _P
+
+        hermes_env = _P.home() / "AppData" / "Local" / "hermes" / ".env"
+        if not hermes_env.exists():
+            return ""
+        for line in hermes_env.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            if k.strip() == "OPENCODE_GO_API_KEY":
+                return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
+OPENCODE_ZEN_API_KEY = os.environ.get("OPENCODE_ZEN_API_KEY", "").strip() or _read_hermes_go_key()
+KEY_SOURCE = "env" if os.environ.get("OPENCODE_ZEN_API_KEY", "").strip() else (
+    "hermes-env" if OPENCODE_ZEN_API_KEY else "none")
 OPENCODE_GO_BASE = os.environ.get(
     "OPENCODE_GO_BASE", "https://opencode.ai/zen/go/v1"
 ).rstrip("/")
@@ -22,7 +46,7 @@ OPENCODE_GO_MODELS_URL = f"{OPENCODE_GO_BASE}/models"
 
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE", "http://localhost:11434").rstrip("/")
 
-DEFAULT_MODEL = os.environ.get("ATLAS_DEFAULT_MODEL", "opencode-go/qwen-3-coder-480b")
+DEFAULT_MODEL = os.environ.get("ATLAS_DEFAULT_MODEL", "ollama/qwen3:0.6b")
 CATALOG_TTL_SECONDS = int(os.environ.get("ATLAS_CATALOG_TTL", "3600"))
 CATALOG_TIMEOUT_SECONDS = float(os.environ.get("ATLAS_CATALOG_TIMEOUT", "20"))
 

@@ -143,6 +143,13 @@ export const useStore = create<Store>((set, get) => ({
   loadModels: async (refresh = false) => {
     try {
       const r = await api.listModels(refresh)
+      // Server default wins for new conversations unless the user picked one.
+      if (!localStorage.getItem('atlas.defaultModel')) {
+        try {
+          const cfg = await api.getSettings()
+          if (cfg.default_model) localStorage.setItem('atlas.defaultModel', cfg.default_model)
+        } catch { /* ignore */ }
+      }
       set({ models: r.models, modelsMeta: { stale: r.stale, error: r.error, source: r.source } })
     } catch (e: any) {
       set((s) => ({ modelsMeta: { ...s.modelsMeta, error: String(e?.message || e) } }))

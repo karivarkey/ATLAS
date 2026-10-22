@@ -9,7 +9,7 @@ import time
 import urllib.request
 
 B = "http://127.0.0.1:8765"
-MODEL = "ollama/qwen2.5-coder:1.5b"
+MODEL = "ollama/qwen3:0.6b"
 
 
 def req(method, path, body=None):
