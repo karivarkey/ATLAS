@@ -1,3 +1,4 @@
+import pytest
 """Concurrency acceptance test (§10): two chats progress independently,
 no crossed messages/tool outputs, cancel of A leaves B running.
 
@@ -10,6 +11,16 @@ import json
 from app import db
 from app.services import executions, model_catalog, providers
 
+
+
+@pytest.fixture(autouse=True)
+def _no_real_embeds(monkeypatch):
+    from app.services import embeddings as _emb
+
+    async def _fake(texts):
+        return [[1.0] * 1024 for _ in texts]
+
+    monkeypatch.setattr(_emb, "embed_batch", _fake)
 
 async def fake_complete(model, messages, session_id=""):
     mid = model["id"]

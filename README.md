@@ -41,6 +41,27 @@ The composer has a mic button: record → audio posts to
 `POST /api/v1/stt/transcribe` → AssemblyAI (`universal-2`, English-only)
 returns text into the draft. Key lives in gitignored `backend/.env.local`
 (`ASSEMBLYAI_API_KEY`), never in the repo or browser.
+
+## Memory engine (Layers A–D)
+
+Every chat is archived immutably (Layer A) and indexed: FTS5 lexical search
+works immediately after commit; `qwen3-embedding:0.6b` vectors (1024-dim,
+Ollama `/api/embed`) are filled in by a background worker with retries and
+backlog diagnostics. Retrieval is hybrid RRF (lexical + vector + recency).
+The agent gets SOUL.md + USER.md + top memories with provenance refs.
+
+- Structured records + proposals: `GET /api/v1/memory/records`, approve/reject
+  SOUL.md changes in the Memory view (SOUL changes always require approval).
+- Dream Engine: `POST /api/v1/memory/dream` (manual), event trigger after
+  substantial chats, daily 03:00 scheduler (`ATLAS_DREAM_AT`). Low-risk facts
+  auto-apply; contradictions supersede with history preserved.
+- Vector store is SQLite (float32 BLOB + numpy cosine) — a deliberate
+  equivalent to pgvector for this single-node app: zero extra services,
+  transactional with the archive, hermetic tests. Swap `memory.py` if needed.
+- Exclude a chat via the drawer toggle or `PATCH /conversations/:id`
+  `{"memory_excluded": true}` — excluded chats are never indexed or dreamed.
+- UI: sidebar **Memory** (search, knowledge, SOUL.md/USER.md + version
+  history + rollback, dream jobs + health), per-run memory refs in the drawer.
 For frontend dev with hot reload:
 
 ```sh

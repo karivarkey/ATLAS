@@ -71,6 +71,31 @@ TOOL_SCHEMAS = [
         "description": "Ask the user a question when blocked. Execution pauses until answered.",
         "parameters": {"question": "the question for the user"},
     },
+    {
+        "name": "search_memory",
+        "description": "Hybrid search across all authorized chats + consolidated memory. Returns evidence with sources.",
+        "parameters": {"query": "what to look for", "limit": "max results, default 8"},
+    },
+    {
+        "name": "search_chat_history",
+        "description": "Exact/lexical search over raw chat history.",
+        "parameters": {"query": "literal text", "limit": "max results, default 10", "conversation_id": "optional conversation id"},
+    },
+    {
+        "name": "get_source_message",
+        "description": "Fetch one original message by id with its conversation.",
+        "parameters": {"message_id": "message id from search results"},
+    },
+    {
+        "name": "get_conversation_context",
+        "description": "Read recent messages of another authorized conversation.",
+        "parameters": {"conversation_id": "conversation id"},
+    },
+    {
+        "name": "get_memory_record",
+        "description": "Read one consolidated memory record by id.",
+        "parameters": {"memory_id": "record id"},
+    },
 ] + webtools.WEB_TOOL_SCHEMAS
 
 DESTRUCTIVE_PATTERNS = re.compile(
@@ -117,6 +142,12 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"Fetch `{str(args.get('url', ''))[:100]}`"
     if name == "web_research":
         return f"Deep-research `{str(args.get('query', ''))[:100]}`"
+    if name == "search_memory":
+        return f"Memory search `{str(args.get('query', ''))[:100]}`"
+    if name == "search_chat_history":
+        return f"History search `{str(args.get('query', ''))[:100]}`"
+    if name in ("get_source_message", "get_conversation_context", "get_memory_record"):
+        return f"{name}"
     return name
 
 
@@ -125,6 +156,9 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
         return False, ""
     if name == "ask_user":
         return False, ""
+    if name in ("search_memory", "search_chat_history", "get_source_message",
+                "get_conversation_context", "get_memory_record"):
+        return False, ""  # read-only memory retrieval
     if name in ("web_search", "web_fetch", "web_research"):
         # Read-only network retrieval. Results are untrusted third-party
         # data; the agent prompt requires treating them as such.
@@ -145,6 +179,16 @@ async def run_tool(name: str, args: dict, root: Path) -> dict:
     """Execute a tool. Returns {'ok': bool, 'output': str, 'diff': str?}."""
     if name in ("web_search", "web_fetch", "web_research"):
         return await webtools.run_web_tool(name, args)
+    if name in ("search_memory", "search_chat_history", "get_source_message",
+                "get_conversation_context", "get_memory_report", "get_memory_record"):
+        from . import memory as _memtools
+        try:
+            scope = _memtools.scope_of(root.name)
+        except Exception:
+            scope = _memtools.DEFAULT_SCOPE
+        if name == "get_memory_report":
+            name = "get_memory_record"
+        return await _memtools.run_memory_tool(name, args, scope)
     try:
         if name == "fs_list":
             target = resolve(root, str(args.get("path", ".")))

@@ -1,3 +1,4 @@
+import pytest
 """Approval + pause/resume workflows with a stubbed provider.
 
 Covers: waiting_approval → approve → completed with real shell output;
@@ -9,6 +10,16 @@ import json
 from app import db, events
 from app.services import agent, executions, model_catalog, providers
 
+
+
+@pytest.fixture(autouse=True)
+def _no_real_embeds(monkeypatch):
+    from app.services import embeddings as _emb
+
+    async def _fake(texts):
+        return [[1.0] * 1024 for _ in texts]
+
+    monkeypatch.setattr(_emb, "embed_batch", _fake)
 
 class StubState:
     shell_calls = 0

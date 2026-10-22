@@ -1,6 +1,7 @@
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, CircleDashed,
-  FileDiff, Globe, Loader2, Search, Terminal, Wrench, XCircle,
+  AlertTriangle, Brain, CheckCircle2, ChevronDown, ChevronRight, CircleDashed,
+  FileDiff, FileText, Globe, History, Loader2, Database,
+  Search, Terminal, Wrench, XCircle,
 } from 'lucide-react'
 import { useState } from 'react'
 import { ToolCall } from './store'
@@ -9,7 +10,10 @@ const ICONS: Record<string, any> = {
   fs_read: FileDiff, fs_write: FileDiff, fs_edit: FileDiff,
   fs_list: Search, fs_glob: Search, fs_grep: Search,
   shell_exec: Terminal, git_clone: Terminal, git_status: Terminal,
-  web_search: Search, web_fetch: Globe,
+  web_search: Search, web_fetch: Globe, web_research: Globe,
+  search_memory: Brain, search_chat_history: History,
+  get_source_message: FileText, get_conversation_context: FileText,
+  get_memory_record: Database,
   ask_user: AlertTriangle,
 }
 

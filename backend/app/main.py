@@ -10,11 +10,13 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, db
 from .routers import conversations, executions
+from .routers import memory as memory_router
 from .routers import stt as stt_router
 from .routers.workspaces import router as workspaces_router, settings_router
 from .services import executions as exec_manager
 
 from contextlib import asynccontextmanager
+import asyncio as _asyncio
 
 
 @asynccontextmanager
@@ -23,7 +25,25 @@ async def lifespan(app: FastAPI):
     recovered = exec_manager.recover_on_startup()
     if recovered:
         print(f"[atlas] marked {recovered} orphaned execution(s) as interrupted")
+    # Memory engine: seed files, recover indexer, start background tasks.
+    try:
+        from .services import dream as _dream
+        from .services import indexer as _indexer
+        from .services import memory_files as _mf
+        _mf.read_file("SOUL.md")
+        _mf.read_file("USER.md")
+        rec = _indexer.recover()
+        if rec["reset_processing"] or rec["reconciled_messages"]:
+            print(f"[atlas] memory recover: {rec}")
+        app.state.indexer_task = _asyncio.create_task(_indexer.worker())
+        app.state.dream_task = _asyncio.create_task(_dream.scheduler())
+    except Exception as exc:
+        print(f"[atlas] memory startup note: {exc}")
     yield
+    for attr in ("indexer_task", "dream_task"):
+        task = getattr(app.state, attr, None)
+        if task:
+            task.cancel()
 
 
 app = FastAPI(title="Atlas API", version="1.0.0", lifespan=lifespan)
@@ -39,6 +59,7 @@ app.add_middleware(
 app.include_router(conversations.router)
 app.include_router(executions.router)
 app.include_router(stt_router.router)
+app.include_router(memory_router.router)
 app.include_router(workspaces_router)
 app.include_router(settings_router)
 

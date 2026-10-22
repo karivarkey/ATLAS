@@ -109,6 +109,131 @@ CREATE TABLE IF NOT EXISTS audit (
     action TEXT NOT NULL,
     detail_json TEXT NOT NULL DEFAULT '{}'
 );
+
+-- ============ Atlas Memory Engine (Layers A-D) ============
+-- Layer B: searchable chunks (deterministic ids for idempotent reindex)
+CREATE TABLE IF NOT EXISTS memory_chunks (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL DEFAULT '',
+    execution_id TEXT NOT NULL DEFAULT '',
+    record_id TEXT NOT NULL DEFAULT '',
+    scope_id TEXT NOT NULL DEFAULT 'user:default',
+    kind TEXT NOT NULL DEFAULT 'message',
+    text TEXT NOT NULL,
+    char_start INTEGER NOT NULL DEFAULT 0,
+    embedding BLOB,
+    embedding_model TEXT NOT NULL DEFAULT '',
+    embedding_dim INTEGER NOT NULL DEFAULT 0,
+    indexed_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_conv ON memory_chunks(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chunks_scope ON memory_chunks(scope_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chunks_msg ON memory_chunks(message_id);
+
+-- FTS5 lexical index (external content, synced by triggers for immediacy)
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5(
+    text, content='memory_chunks', content_rowid='rowid');
+CREATE TRIGGER IF NOT EXISTS mem_chunks_ai AFTER INSERT ON memory_chunks BEGIN
+    INSERT INTO memory_chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS mem_chunks_ad AFTER DELETE ON memory_chunks BEGIN
+    INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+END;
+
+-- Layer B reliability: transactional outbox for embedding work
+CREATE TABLE IF NOT EXISTS memory_index_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chunk_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_try_at INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+-- Layer C: structured memory records
+CREATE TABLE IF NOT EXISTS memory_records (
+    id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL DEFAULT 'user:default',
+    memory_type TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    predicate TEXT NOT NULL DEFAULT '',
+    object_value TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    valid_from INTEGER NOT NULL DEFAULT 0,
+    valid_until INTEGER NOT NULL DEFAULT 0,
+    source_conversation_ids TEXT NOT NULL DEFAULT '[]',
+    source_message_ids TEXT NOT NULL DEFAULT '[]',
+    source_chunk_ids TEXT NOT NULL DEFAULT '[]',
+    supersedes_memory_id TEXT NOT NULL DEFAULT '',
+    embedding_model TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_records_scope ON memory_records(scope_id, status, updated_at);
+
+CREATE TABLE IF NOT EXISTS memory_record_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at INTEGER NOT NULL
+);
+
+-- Layer D: versioned SOUL.md / USER.md projections
+CREATE TABLE IF NOT EXISTS memory_file_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'system',
+    created_at INTEGER NOT NULL,
+    UNIQUE(path, version)
+);
+
+-- Dream engine jobs + proposals
+CREATE TABLE IF NOT EXISTS dream_jobs (
+    id TEXT PRIMARY KEY,
+    idempotency_key TEXT UNIQUE,
+    status TEXT NOT NULL DEFAULT 'queued',
+    trigger TEXT NOT NULL DEFAULT 'manual',
+    watermark_from INTEGER NOT NULL DEFAULT 0,
+    watermark_to INTEGER NOT NULL DEFAULT 0,
+    conversation_ids TEXT NOT NULL DEFAULT '[]',
+    model TEXT NOT NULL DEFAULT '',
+    stats_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS memory_proposals (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    confidence REAL NOT NULL DEFAULT 0.5,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER NOT NULL DEFAULT 0,
+    decided_by TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS execution_memory_refs (
+    execution_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (execution_id, chunk_id)
+);
 """
 
 
@@ -122,6 +247,13 @@ def connect() -> sqlite3.Connection:
             _conn.execute("PRAGMA journal_mode=WAL")
             _conn.executescript(SCHEMA)
             _conn.commit()
+        # guarded migrations for pre-existing databases
+        cols = [r["name"] for r in _conn.execute("PRAGMA table_info(conversations)")]
+        if "scope_id" not in cols:
+            _conn.execute("ALTER TABLE conversations ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'user:default'")
+        if "memory_excluded" not in cols:
+            _conn.execute("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0")
+        _conn.commit()
         return _conn
 
 
@@ -158,3 +290,29 @@ def audit(action: str, detail: dict[str, Any] | None = None, actor: str = "syste
         "INSERT INTO audit (created_at, actor, action, detail_json) VALUES (?, ?, ?, ?)",
         (now_ms(), actor, action, json.dumps(detail or {})),
     )
+
+
+def ensure_column(table: str, column: str, ddl: str) -> None:
+    """Idempotent ADD COLUMN for migrations on pre-existing databases."""
+    cols = [r["name"] for r in query(f"PRAGMA table_info({table})")]
+    if column not in cols:
+        execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def transaction():
+    """Context manager for atomic multi-statement writes (outbox pattern)."""
+    import contextlib as _cl
+
+    @_cl.contextmanager
+    def _tx():
+        conn = connect()
+        with _lock:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    return _tx()

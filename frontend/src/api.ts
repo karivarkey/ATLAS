@@ -130,6 +130,46 @@ export const api = {
     req<
       { id: string; execution_id: string; path: string; kind: string; summary: string }[]
     >(`/api/v1/conversations/${cid}/artifacts`),
+  memorySearch: (q: string, scope = '') =>
+    req<{ results: any[]; scope: string; semantic: boolean }>(
+      `/api/v1/memory/search?q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}`,
+    ),
+  memoryRecords: (scope = '', status = '') =>
+    req<{ records: any[] }>(
+      `/api/v1/memory/records?scope=${encodeURIComponent(scope)}&status=${status}`,
+    ),
+  deleteRecord: (id: string) =>
+    req<{ ok: boolean }>(`/api/v1/memory/records/${id}`, { method: 'DELETE' }),
+  memoryFile: (name: string) =>
+    req<{ path: string; content: string; version: number; versions: any[] }>(
+      `/api/v1/memory/files/${name}`,
+    ),
+  saveMemoryFile: (name: string, content: string) =>
+    req<{ ok: boolean; version: number }>(`/api/v1/memory/files/${name}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+  rollbackMemoryFile: (name: string, version: number) =>
+    req<{ ok: boolean; version: number }>(
+      `/api/v1/memory/files/${name}/rollback/${version}`,
+      { method: 'POST' },
+    ),
+  memoryProposals: (status = 'proposed') =>
+    req<{ proposals: any[] }>(`/api/v1/memory/proposals?status=${status}`),
+  decideProposal: (id: string, approve: boolean) =>
+    req<{ ok: boolean }>(`/api/v1/memory/proposals/${id}/${approve ? 'approve' : 'reject'}`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+  memoryJobs: () => req<{ jobs: any[] }>('/api/v1/memory/jobs'),
+  runDream: (conversation_ids: string[] = []) =>
+    req<{ job_id: string; status: string }>(`/api/v1/memory/dream`, {
+      method: 'POST',
+      body: JSON.stringify({ conversation_ids }),
+    }),
+  memoryHealth: () => req<any>('/api/v1/memory/health'),
+  executionRefs: (eid: string) =>
+    req<{ refs: any[] }>(`/api/v1/memory/execution/${eid}/refs`),
   workspaceFiles: (cid: string, path = '.') =>
     req<any>(`/api/v1/workspaces/${cid}/files?path=${encodeURIComponent(path)}`),
   workspaceDiff: (cid: string) => req<any>(`/api/v1/workspaces/${cid}/diff`),

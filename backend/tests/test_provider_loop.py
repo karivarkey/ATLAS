@@ -1,3 +1,4 @@
+import pytest
 """Integration tests: full agent loop against fake OpenAI-compatible SSE
 servers (stdlib http.server in a thread). Proves protocol parsing, real tool
 execution, loop guards and completion — only the model weights are fake.
@@ -10,6 +11,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from app import db, events
 from app.services import agent, executions, model_catalog
 
+
+
+@pytest.fixture(autouse=True)
+def _no_real_embeds(monkeypatch):
+    from app.services import embeddings as _emb
+
+    async def _fake(texts):
+        return [[1.0] * 1024 for _ in texts]
+
+    monkeypatch.setattr(_emb, "embed_batch", _fake)
 
 class FakeOpenAI(BaseHTTPRequestHandler):
     STATE = {"calls": 0}

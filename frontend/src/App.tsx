@@ -1,16 +1,18 @@
 import {
-  AlertTriangle, Check, ChevronDown, CircleStop, FileDiff, Loader2, MessageSquarePlus,
+  AlertTriangle, Brain, Check, ChevronDown, CircleStop, FileDiff, Loader2, MessageSquarePlus,
   Mic, Pause, Play, RotateCcw, Send, Settings as SettingsIcon, PanelRight, Search,
   SquarePen, Trash2, Wrench, X,
 } from 'lucide-react'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ChatMessage } from './api'
 import { Markdown } from './markdown'
+import { MemoryView } from './MemoryView'
 import { useStore } from './store'
 import { ToolCard } from './ToolCard'
 import { useExecutionStream } from './useStream'
 
 export default function App() {
+  const [view, setView] = useState<'chat' | 'memory'>('chat')
   const activeId = useStore((s) => s.activeId)
   const loadConversations = useStore((s) => s.loadConversations)
   const loadModels = useStore((s) => s.loadModels)
@@ -26,9 +28,15 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar />
+      <Sidebar onMemory={() => setView('memory')} inMemory={view === 'memory'} />
       <main className="main">
-        {activeId ? <ChatView key={activeId} convId={activeId} /> : <EmptyState />}
+        {view === 'memory' ? (
+          <MemoryView onClose={() => setView('chat')} />
+        ) : activeId ? (
+          <ChatView key={activeId} convId={activeId} />
+        ) : (
+          <EmptyState />
+        )}
       </main>
       {settingsOpen && <SettingsModal />}
       {keyConfigured === false && <KeyBanner />}
@@ -64,7 +72,7 @@ function KeyBanner() {
 
 /* ---------------- Sidebar ---------------- */
 
-function Sidebar() {
+function Sidebar({ onMemory, inMemory }: { onMemory: () => void; inMemory: boolean }) {
   const conversations = useStore((s) => s.conversations)
   const activeId = useStore((s) => s.activeId)
   const selectConversation = useStore((s) => s.selectConversation)
@@ -112,6 +120,9 @@ function Sidebar() {
       </div>
       <button className="btn newchat" onClick={() => createConversation()}>
         <SquarePen size={15} /> New chat
+      </button>
+      <button className={`btn newchat ${inMemory ? 'active' : ''}`} onClick={onMemory}>
+        <Brain size={15} /> Memory
       </button>
       <div className="searchbox">
         <Search size={14} />
@@ -556,13 +567,24 @@ function Header({ convId, running }: { convId: string; running: boolean }) {
 function DetailDrawer({ convId }: { convId: string }) {
   const execution = useStore((s) => s.chats[convId]?.execution)
   const stream = useStore((s) => s.chats[convId]?.stream)
+  const conv = useStore((s) => s.conversations.find((c) => c.id === convId))
   const [diff, setDiff] = useState<string | null>(null)
   const [files, setFiles] = useState<any>(null)
+  const [refs, setRefs] = useState<any[]>([])
+  const [excluded, setExcluded] = useState(!!(conv as any)?.memory_excluded)
 
   useEffect(() => {
     api.workspaceFiles(convId).then(setFiles).catch(() => setFiles({ error: true }))
     api.workspaceDiff(convId).then((d) => setDiff(d.diff || d.note || '(no changes)')).catch(() => setDiff('(unavailable)'))
+    const eid = execution?.id
+    if (eid) api.executionRefs(eid).then((r) => setRefs(r.refs)).catch(() => {})
+    setExcluded(!!(conv as any)?.memory_excluded)
   }, [convId, stream?.tools.length])
+
+  const toggleExclude = async () => {
+    await api.patchConversation(convId, { memory_excluded: !excluded } as any)
+    setExcluded(!excluded)
+  };
 
   return (
     <div className="drawer">
@@ -573,6 +595,24 @@ function DetailDrawer({ convId }: { convId: string }) {
       {execution?.error && <div className="errorbox sm">{execution.error}</div>}
       <h4>Workspace</h4>
       <div className="muted">{files?.entries ? `${files.entries.length} entries` : '…'}</div>
+      <h4><Brain size={13} /> Memory</h4>
+      <label className="check mem-check">
+        <input type="checkbox" checked={excluded} onChange={toggleExclude} />
+        Exclude this chat from cross-chat memory
+      </label>
+      {excluded && <div className="muted small">Excluded: nothing here is indexed or dreamed.</div>}
+      {refs.length > 0 ? (
+        <div>
+          <div className="muted small">This run used {refs.length} memor{refs.length === 1 ? 'y' : 'ies'}:</div>
+          {refs.slice(0, 8).map((r) => (
+            <div key={r.chunk_id} className="mem-ref" title={r.chunk_id}>
+              <span className="chip">{Number(r.score).toFixed(2)}</span> {r.snippet}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="muted small">No cross-chat memory used in this run.</div>
+      )}
       <h4><FileDiff size={13} /> Changes</h4>
       <pre className="diffbox">{diff === null ? 'Loading…' : diff.slice(0, 8000) || '(no changes)'}</pre>
     </div>

@@ -17,9 +17,18 @@ router = APIRouter(prefix="/api/v1/conversations", tags=["conversations"])
 
 def _conv_row(r) -> dict:
     active = executions.active_for_conversation(r["id"])
+    try:
+        scope = r["scope_id"] or "user:default"
+    except Exception:
+        scope = "user:default"
+    try:
+        excluded = bool(r["memory_excluded"])
+    except Exception:
+        excluded = False
     return {"id": r["id"], "title": r["title"], "model": r["model"] or config.DEFAULT_MODEL,
             "workspace_id": r["workspace_id"], "created_at": r["created_at"],
-            "updated_at": r["updated_at"], "active_execution": active}
+            "updated_at": r["updated_at"], "active_execution": active,
+            "scope_id": scope, "memory_excluded": excluded}
 
 
 @router.get("")
@@ -68,11 +77,25 @@ def patch_conversation(cid: str, body: ConversationPatch):
     if body.model is not None:
         db.execute("UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?",
                    (body.model, db.now_ms(), cid))
+    if body.memory_excluded is not None or body.scope_id is not None:
+        from ..services import memory as _mem
+        db.ensure_column("conversations", "scope_id", "TEXT NOT NULL DEFAULT 'user:default'")
+        db.ensure_column("conversations", "memory_excluded", "INTEGER NOT NULL DEFAULT 0")
+        if body.scope_id is not None:
+            db.execute("UPDATE conversations SET scope_id = ? WHERE id = ?",
+                       (body.scope_id[:80], cid))
+        if body.memory_excluded is not None:
+            _mem.set_excluded(cid, bool(body.memory_excluded))
     return get_conversation(cid)
 
 
 @router.delete("/{cid}")
 def delete_conversation(cid: str):
+    from ..services import memory as _mem
+    try:
+        _mem.delete_conversation_cascade(cid)
+    except Exception:
+        pass
     db.execute("DELETE FROM conversations WHERE id = ?", (cid,))
     db.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
     return {"ok": True}

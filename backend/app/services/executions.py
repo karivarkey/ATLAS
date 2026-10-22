@@ -44,6 +44,11 @@ async def submit(conversation_id: str, user_text: str, model: str) -> dict:
         " execution_id, status, created_at) VALUES (?, ?, 'user', ?, ?, '[]', '', 'done', ?)",
         (msg_id, conversation_id, user_text, model, db.now_ms()),
     )
+    from . import memory as _mem
+    try:
+        _mem.ingest_message(conversation_id, msg_id, "user", user_text)
+    except Exception:
+        pass  # indexing must never break sending; reconciler covers gaps
     if not conv["title"] or conv["title"] == "New conversation":
         title = (user_text.strip().split("\n")[0])[:60] or "New conversation"
         db.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id))

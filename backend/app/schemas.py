@@ -14,6 +14,8 @@ class ConversationCreate(BaseModel):
 class ConversationPatch(BaseModel):
     title: str | None = None
     model: str | None = None
+    memory_excluded: bool | None = None
+    scope_id: str | None = None
 
 
 class MessageSend(BaseModel):
