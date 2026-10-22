@@ -6,6 +6,7 @@ import {
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ChatMessage } from './api'
 import { Markdown } from './markdown'
+import { MemoryFilePanel } from './MemoryFiles'
 import { MemoryView } from './MemoryView'
 import { useStore } from './store'
 import { ToolCard } from './ToolCard'
@@ -742,6 +743,7 @@ function SettingsModal() {
   const models = useStore((s) => s.models)
   const [settings, setSettings] = useState<any>(null)
   const [def, setDef] = useState('')
+  const [stab, setStab] = useState<'general' | 'soul' | 'user'>('general')
 
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -762,46 +764,69 @@ function SettingsModal() {
 
   return (
     <div className="modal-back" onClick={() => setSettingsOpen(false)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`modal settings-modal ${stab === 'general' ? '' : 'wide'}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-head">
           <h3>Settings</h3>
           <button className="icon-btn" onClick={() => setSettingsOpen(false)}><X size={15} /></button>
         </div>
-        {!settings ? <div className="muted pad">Loading…</div> : (
-          <>
-            <label>Default model for new conversations</label>
-            <select value={def} onChange={(e) => setDef(e.target.value)}>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>{m.id}</option>
-              ))}
-            </select>
-            <label>Server default model</label>
-            <input
-              value={settings.default_model || ''}
-              onChange={(e) => setSettings({ ...settings, default_model: e.target.value })}
-            />
-            <label className="check">
+        <div className="mem-tabs settings-tabs">
+          {([['general', 'General'], ['soul', 'SOUL.md'], ['user', 'USER.md']] as const).map(
+            ([t, label]) => (
+              <button key={t} className={`mem-tab ${stab === t ? 'sel' : ''}`} onClick={() => setStab(t)}>
+                {label}
+              </button>
+            ),
+          )}
+        </div>
+        {stab === 'general' ? (
+          !settings ? <div className="muted pad">Loading…</div> : (
+            <>
+              <label>Default model for new conversations</label>
+              <select value={def} onChange={(e) => setDef(e.target.value)}>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.id}</option>
+                ))}
+              </select>
+              <label>Server default model</label>
               <input
-                type="checkbox"
-                checked={!!settings.auto_approve}
-                onChange={(e) => setSettings({ ...settings, auto_approve: e.target.checked })}
+                value={settings.default_model || ''}
+                onChange={(e) => setSettings({ ...settings, default_model: e.target.value })}
               />
-              Auto-approve workspace reads/writes (destructive commands always ask)
-            </label>
-            <label>Catalog cache TTL (seconds)</label>
-            <input
-              type="number"
-              value={settings.catalog_ttl_seconds ?? 3600}
-              onChange={(e) => setSettings({ ...settings, catalog_ttl_seconds: Number(e.target.value) })}
-            />
-            <div className="muted small">
-              OpenCode Go key: {settings.key_configured ? 'configured ✓' : 'not configured — set OPENCODE_ZEN_API_KEY on the server and restart.'}
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={!!settings.auto_approve}
+                  onChange={(e) => setSettings({ ...settings, auto_approve: e.target.checked })}
+                />
+                Auto-approve workspace reads/writes (destructive commands always ask)
+              </label>
+              <label>Catalog cache TTL (seconds)</label>
+              <input
+                type="number"
+                value={settings.catalog_ttl_seconds ?? 3600}
+                onChange={(e) => setSettings({ ...settings, catalog_ttl_seconds: Number(e.target.value) })}
+              />
+              <div className="muted small">
+                OpenCode Go key: {settings.key_configured ? 'configured ✓' : 'not configured — set OPENCODE_ZEN_API_KEY on the server and restart.'}
+              </div>
+              <div className="modal-foot">
+                <button className="btn" onClick={() => setSettingsOpen(false)}>Cancel</button>
+                <button className="btn primary" onClick={save}>Save</button>
+              </div>
+            </>
+          )
+        ) : (
+          <div className="settings-mem">
+            <div className="muted small mem-note">
+              {stab === 'soul'
+                ? 'Agent operating principles. Short and behavioral — changes via dream need your approval.'
+                : 'What the agent remembers about you. Manual edits are adopted as new versions.'}
             </div>
-            <div className="modal-foot">
-              <button className="btn" onClick={() => setSettingsOpen(false)}>Cancel</button>
-              <button className="btn primary" onClick={save}>Save</button>
-            </div>
-          </>
+            <MemoryFilePanel name={stab === 'soul' ? 'SOUL.md' : 'USER.md'} compact />
+          </div>
         )}
       </div>
     </div>

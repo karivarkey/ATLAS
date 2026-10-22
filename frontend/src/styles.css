@@ -279,8 +279,16 @@ body {
 }
 .modal {
   background: var(--panel); border-radius: 14px; padding: 18px; width: 440px; max-width: 92vw;
+  max-height: 88vh; overflow-y: auto;
   display: flex; flex-direction: column; gap: 8px;
 }
+.modal.wide { width: 640px; }
+.settings-tabs { margin: 0 -18px; padding: 0 18px; }
+.memfile-spacer { flex: 1; }
+.mini-btn.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+.settings-mem { display: flex; flex-direction: column; gap: 8px; }
+.mem-note { margin-bottom: 2px; }
+.mem-history { margin-top: 4px; max-height: 160px; overflow-y: auto; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
 .modal-head h3 { margin: 0; }
 .modal label { font-size: 12.5px; font-weight: 600; margin-top: 6px; }

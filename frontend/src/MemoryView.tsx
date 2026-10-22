@@ -1,8 +1,8 @@
-import { Brain, Check, Database, FileText, History, Play, Search, X } from 'lucide-react'
+import { Brain, Check, Database, History, Play, Search, X } from 'lucide-react'
 import React, { useEffect, useState } from 'react'
 import { api } from './api'
 import { useStore } from './store'
-import { Markdown } from './markdown'
+import { MemoryFilePanel } from './MemoryFiles'
 
 type Tab = 'search' | 'records' | 'soul' | 'user' | 'jobs'
 
@@ -130,54 +130,7 @@ function RecordsTab() {
 }
 
 function FileTab({ name }: { name: string }) {
-  const [content, setContent] = useState('')
-  const [versions, setVersions] = useState<any[]>([])
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState('')
-  const load = async () => {
-    const r = await api.memoryFile(name)
-    setContent(r.content)
-    setVersions(r.versions)
-    setDraft(r.content)
-  }
-  useEffect(() => { load() }, [name])
-  return (
-    <div>
-      <div className="mem-searchrow">
-        <FileText size={14} />
-        <span className="muted small">v{versions[0]?.version || 0} · {versions[0]?.source}</span>
-        <button className="mini-btn" onClick={() => setEditing((v) => !v)}>
-          {editing ? 'Cancel' : 'Edit'}
-        </button>
-        {editing && (
-          <button
-            className="btn primary sm"
-            onClick={async () => {
-              await api.saveMemoryFile(name, draft)
-              setEditing(false)
-              load()
-            }}
-          >
-            <Check size={13} /> Save
-          </button>
-        )}
-      </div>
-      {editing ? (
-        <textarea className="mem-editor" value={draft} onChange={(e) => setDraft(e.target.value)} />
-      ) : (
-        <div className="mem-file"><Markdown text={content} /></div>
-      )}
-      <h4>History (rollback preserves everything)</h4>
-      {versions.map((v) => (
-        <div key={v.version} className="mem-version">
-          <span>v{v.version} · {v.source} · {new Date(v.created_at).toLocaleString()}</span>
-          <button className="mini-btn" onClick={() => api.rollbackMemoryFile(name, v.version).then(load)}>
-            Roll back to here
-          </button>
-        </div>
-      ))}
-    </div>
-  )
+  return <MemoryFilePanel name={name} />;
 }
 
 function JobsTab() {
