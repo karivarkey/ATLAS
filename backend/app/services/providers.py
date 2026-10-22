@@ -107,7 +107,8 @@ async def chat_completions(model: dict, messages: list[dict]) -> AsyncIterator[d
                 slot["id"] += tc.get("id", "") or ""
                 fn = tc.get("function", {}) or {}
                 slot["name"] += fn.get("name", "") or ""
-                slot["arguments"] += fn.get("arguments", "") or ""
+                arg = fn.get("arguments", "") or ""
+                slot["arguments"] += arg if isinstance(arg, str) else json.dumps(arg)
     for slot in calls.values():
         try:
             args = json.loads(slot["arguments"] or "{}")

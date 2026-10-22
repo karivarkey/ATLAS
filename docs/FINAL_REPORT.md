@@ -1,0 +1,64 @@
+# Atlas — final verification report (2026-10-22)
+
+## What was built
+
+A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
+
+- **Backend** (`backend/app`, Python + FastAPI + SQLite/WAL, served on :8765):
+  versioned `/api/v1` (conversations, messages, executions, models, workspaces,
+  settings), SSE streams with persisted per-execution seq + replay/dedupe,
+  explicit execution state machine with validated transitions, global semaphore
+  + per-conversation locks, crash recovery (orphans → `interrupted`).
+- **Agent** (`services/agent.py`, `workspace.py`, `providers.py`): real tools
+  (read/write/edit/list/glob/grep/shell/git-clone/status) jailed to
+  `workspaces/<conversationId>`; destructive-command + unknown-tool approval;
+  `ask_user` questions; cooperative pause/resume; stop/cancel; retry;
+  identical-call, identical-output, and stagnation (20 steps w/o file change)
+  loop guards; fenced-JSON tool-call fallback for small models; per-model
+  protocol routing (chat_completions / responses / messages / ollama).
+- **Model catalog** (`services/model_catalog.py`): live discovery from
+  `GET {OPENCODE_GO_BASE}/models` with Bearer auth, normalization, TTL cache,
+  stale-with-error semantics, Ollama fallback. Never invents ids.
+- **Frontend** (`frontend`, React + Vite + TS + Zustand): sidebar with search,
+  model picker (search/group/refresh/stale indicator), streaming composer,
+  Markdown + code blocks + tool cards, execution drawer with diffs, pending
+  question/approval UI, settings, onboarding banner when no key is configured,
+  SSE hook with replay + backoff + dedupe, per-conversation state keyed by id.
+
+## Evidence (all commands run, all green)
+
+| Check | Command | Result |
+|---|---|---|
+| Backend unit + integration | `python -m pytest tests/ -q` (backend) | **20 passed** |
+| Frontend unit | `bunx vitest run` (frontend) | **4 passed** |
+| Typecheck + build | `bunx tsc --noEmit`, `bunx vite build` | clean, dist built |
+| API smoke | `python tests/smoke_live.py` | PASS |
+| Fake-model tool loop | `test_provider_loop.py` | file written on disk, completed |
+| Concurrency (2 chats, cancel isolation) | `test_concurrency.py` | **2 passed** |
+| Approval + pause/resume | `test_workflows.py` | **2 passed** |
+| Real task, local model | `python tests/e2e_task.py` (qwen2.5-coder:1.5b) | `exit=0`, `HELLO-ATLAS` in shell output |
+| Browser E2E | `bun e2e/e2e.mjs` (Playwright/Chromium) | **8/8 passed** (boot, CRUD, picker, switch, stream, done, refresh, no errors) |
+
+## Honest limitations
+
+1. **No `OPENCODE_ZEN_API_KEY` in this environment** → OpenCode Go live models
+   not exercised; catalog correctly reports `stale:true` + error and serves
+   Ollama models. With a key configured, the same code path (Bearer + endpoint
+   map) is used — verify with `POST /api/v1/models/refresh`.
+2. **qwen2.5-coder:7b too slow here** (5.5 GB free RAM, CPU-heavy split;
+   no output in 180 s) → standardized on 1.5b for live verification. 7b pulled
+   and listed; usable on stronger hardware.
+3. **Small-model flailing**: 1.5b needed 50+ steps on first attempt (fixed by
+   stagnation guard → wraps up ~step 21) and emits fenced-JSON tool calls
+   (handled by fallback parser). Larger/frontier models will be far more
+   step-efficient; the harness bounds the worst case either way.
+4. **No sandbox container**: execution is local-process with path jailing +
+   approval policy (documented in `docs/ARCHITECTURE.md`). Do not expose the
+   server beyond localhost without auth (`ATLAS_SERVER_PASSWORD`) + review.
+
+## Run it
+
+```bat
+start.bat        :: backend on http://127.0.0.1:8765 (serves frontend/dist)
+```
+Set `OPENCODE_ZEN_API_KEY` before starting for live OpenCode Go models.

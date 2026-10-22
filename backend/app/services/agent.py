@@ -180,6 +180,8 @@ async def run_execution(execution_id: str) -> None:
         step = 0
         stuck = False
         seen_calls: dict[str, int] = {}
+        last_modify_step = 0
+        nudged = False
         deadline = time.time() + config.EXECUTION_TIMEOUT_SECONDS
 
         while step < max_steps:
@@ -348,6 +350,24 @@ async def run_execution(execution_id: str) -> None:
                                             {"name": name, "error": result.get("output", "")[:2000]})
                     messages.append({"role": "user",
                                      "content": f"[tool {name} FAILED]\n{result.get('output','')[:4000]}"})
+                if result.get("ok") and name in ("fs_write", "fs_edit"):
+                    last_modify_step = step
+                # Stagnation guard: many steps with no file changes usually
+                # means re-verifying the same outcome. Nudge once, then stop.
+                if step - last_modify_step >= 20:
+                    await events.abroadcast(execution_id, "tool_failed",
+                                            {"name": name,
+                                             "error": "no file changes for 20 steps — wrapping up"})
+                    messages.append({"role": "user",
+                                     "content": "[SYSTEM] No file changes for 20 steps. "
+                                                "Write the final summary now and stop calling tools."})
+                    stuck = True
+                    break
+                if step - last_modify_step >= 12 and not nudged and result.get("ok"):
+                    nudged = True
+                    messages.append({"role": "user",
+                                     "content": "[SYSTEM] No file changes for 12 steps. If the task "
+                                                "is done, summarize and stop calling tools."})
                 # Unproductive-loop breaker: identical consecutive tool
                 # outputs mean no progress — stop and report honestly.
                 recent = [m["content"] for m in messages if m["content"].startswith("[tool ")][-3:]

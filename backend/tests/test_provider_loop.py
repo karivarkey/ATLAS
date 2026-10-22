@@ -59,6 +59,24 @@ class LoopyServer(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
 
 
+class ReadOnlyServer(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunk = {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "r1",
+             "function": {"name": "fs_list",
+                         "arguments": {"path": "."}}}]}}]}
+        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
 def _ok_for(port):
     async def _ok(m):
         return True, {"id": m, "protocol": "chat_completions",
@@ -111,7 +129,6 @@ def test_unproductive_loop_breaker(tmp_path, monkeypatch):
     server = HTTPServer(("127.0.0.1", 0), LoopyServer)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
-
     monkeypatch.setattr(model_catalog, "validate_model", _ok_for(port))
     eid = _submit_and_wait("cloop", "t", "write loop.txt", "fake/m")
     snap = executions.get_snapshot(eid)
@@ -119,4 +136,62 @@ def test_unproductive_loop_breaker(tmp_path, monkeypatch):
     assert snap["current_step"] < 10, snap  # stopped early, not at budget
     failures = [e for e in events.replay(eid, 0) if e["type"] == "tool_failed"]
     assert any("same result 3x" in json.dumps(e) for e in failures)
+    server.shutdown()
+
+
+def test_stagnation_guard_wraps_up(tmp_path, monkeypatch):
+    """20 steps with no file changes must wrap up instead of running to budget."""
+    db.reset_for_tests(tmp_path)
+    server = HTTPServer(("127.0.0.1", 0), ReadOnlyServer)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(model_catalog, "validate_model", _ok_for(port))
+    eid = _submit_and_wait("cslow", "t", "list files", "fake/m")
+    snap = executions.get_snapshot(eid)
+    assert snap["status"] == "completed", snap
+    assert snap["current_step"] <= 25, snap
+    # Either the identical-output breaker or the stagnation guard must
+    # have stopped the loop far below the 60-step budget.
+    failures = [e for e in events.replay(eid, 0) if e["type"] == "tool_failed"]
+    assert any("same result 3x" in json.dumps(e) or "wrapping up" in json.dumps(e)
+               for e in failures)
+    server.shutdown()
+
+
+class TickingServer(BaseHTTPRequestHandler):
+    N = 0
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length)
+        TickingServer.N += 1
+        n = TickingServer.N
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunk = {"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": f"t{n}",
+             "function": {"name": "shell_exec",
+                         "arguments": json.dumps({"command": f"echo tick-{n}"})}}]}}]}
+        self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+def test_stagnation_guard_wraps_up_varied_output(tmp_path, monkeypatch):
+    """Varied but modification-free tool results must still wrap up at ~20 steps."""
+    db.reset_for_tests(tmp_path)
+    TickingServer.N = 0
+    server = HTTPServer(("127.0.0.1", 0), TickingServer)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(model_catalog, "validate_model", _ok_for(port))
+    eid = _submit_and_wait("ctick", "t", "tick", "fake/m")
+    snap = executions.get_snapshot(eid)
+    assert snap["status"] == "completed", snap
+    assert snap["current_step"] <= 25, snap
+    failures = [e for e in events.replay(eid, 0) if e["type"] == "tool_failed"]
+    assert any("wrapping up" in json.dumps(e) for e in failures)
     server.shutdown()
