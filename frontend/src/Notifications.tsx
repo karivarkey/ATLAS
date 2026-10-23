@@ -52,9 +52,9 @@ export function Notifications({ onOpenTask, onOpenNote, pollMs = 15000 }: Props)
         )}
       </button>
       {open && (
-        <div style={{ position: 'absolute', right: 0, top: 34, width: 340, maxHeight: 420,
-          overflowY: 'auto', background: 'var(--panel)', border: '1px solid var(--line)',
-          borderRadius: 12, boxShadow: '0 12px 40px rgba(0,0,0,0.14)', zIndex: 80, padding: 8 }}>
+        <>
+          <div className="notif-backdrop" onClick={() => setOpen(false)} />
+          <div className="notif-pop" onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             padding: '2px 6px 8px' }}>
             <b>Notifications {unread > 0 && `(${unread} unread)`}</b>
@@ -82,7 +82,8 @@ export function Notifications({ onOpenTask, onOpenNote, pollMs = 15000 }: Props)
               </div>
             </div>
           ))}
-        </div>
+          </div>
+        </>
       )}
     </div>
   )

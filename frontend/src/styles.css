@@ -323,6 +323,15 @@ body {
 .mem-ref { font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
 .mem-check { font-size: 13px; display: flex; gap: 8px; align-items: center; }
 
+.notif-backdrop { position: fixed; inset: 0; z-index: 199; background: transparent; }
+/* ---------- Notifications (fixed panel escapes sidebar clipping) ---------- */
+.notif-pop {
+  position: fixed; left: 292px; bottom: 16px; width: 360px; max-width: calc(100vw - 308px);
+  max-height: min(60vh, 560px); overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.16); z-index: 200; padding: 8px;
+}
+
 /* ---------- Memory view ---------- */
 .memoryview { flex: 1; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .mem-head { display: flex; justify-content: space-between; align-items: center;
