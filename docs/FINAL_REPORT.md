@@ -47,7 +47,7 @@ A complete agentic harness in `C:\Users\Karivarkey\Documents\Code\TARS`:
 | Voice input (AssemblyAI universal-2, en) | `python tests/e2e_voice.py` | **PASS**: SAPI speech → "Hello? Atlas, this is a voice test." |
 | 1.3 default task | `python tests/e2e_task.py` (`opencode-go/muse-spark-1.3-contributor`) | **PASS in 3 steps**: `exit=0`, `HELLO-ATLAS` |
 | Memory engine (A–H) | `pytest tests/test_memory.py tests/test_dream.py` | **12 passed**: immediate lexical (xyzz), semantic, isolation, deletion, concurrency, dreaming, recovery, human-edit reconcile, scheduler dedupe |
-| Onboarding hardening (repetition screenshot) | unit + live | Repetition guard (same sentence 3x → wrap-up, 2nd offense ends turn), 7-turn forced finish, no-tool-talk enforcement, sentence-level UI dedupe; sidebar conversations are now cards |
+| Onboarding hardening (repetition screenshot) | unit + live | Repetition guard (same sentence 3x → wrap-up, 2nd offense ends turn), final-turn nudge + 10-turn auto-complete cap, no-tool-talk + prompt inheritance on follow-ups, sentence-level UI dedupe; sidebar conversations remain rows, nav buttons square; 7 onboarding unit tests pass |
 | Live memory on real data | `python tests/e2e_memory.py` | **PASS**: 174/174 embedded (qwen3-embedding:0.6b), hybrid search hits, real dream → 7 records (Kodomo, stack, GitHub…) |
 | Settings SOUL/USER editor | `bun e2e/settings_mem.mjs` | **PASS**: render, edit+save, history, rollback |
 | Browser boot (post-change) | `bun e2e/boot.mjs` | BOOT OK |

@@ -42,11 +42,13 @@ export default function App() {
   return (
     <div className="app">
       <Sidebar
+        onChat={() => setView('chat')}
         onMemory={() => setView('memory')}
         onNotes={() => setView('notes')}
         onTasks={() => setView('tasks')}
         onBellTask={(id) => { setTaskSel(id); setView('tasks') }}
         onBellNote={(path) => { setNoteSel(path); setView('notes') }}
+        inChat={view === 'chat'}
         inMemory={view === 'memory'}
         inNotes={view === 'notes'}
         inTasks={view === 'tasks'}
@@ -112,10 +114,10 @@ function KeyBanner() {
 
 /* ---------------- Sidebar ---------------- */
 
-function Sidebar({ onMemory, onNotes, onTasks, onBellTask, onBellNote, inMemory, inNotes, inTasks }: {
-  onMemory: () => void; onNotes: () => void; onTasks: () => void;
+function Sidebar({ onChat, onMemory, onNotes, onTasks, onBellTask, onBellNote, inChat, inMemory, inNotes, inTasks }: {
+  onChat: () => void; onMemory: () => void; onNotes: () => void; onTasks: () => void;
   onBellTask: (id: string) => void; onBellNote: (path: string) => void;
-  inMemory: boolean; inNotes: boolean; inTasks: boolean;
+  inChat: boolean; inMemory: boolean; inNotes: boolean; inTasks: boolean;
 }) {
   const conversations = useStore((s) => s.conversations)
   const activeId = useStore((s) => s.activeId)
@@ -142,12 +144,12 @@ function Sidebar({ onMemory, onNotes, onTasks, onBellTask, onBellNote, inMemory,
       }
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'o') {
         e.preventDefault()
-        createConversation()
+        createConversation().then(() => onChat())
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [createConversation])
+  }, [createConversation, onChat])
 
   if (!sidebarOpen) {
     return (
@@ -162,18 +164,22 @@ function Sidebar({ onMemory, onNotes, onTasks, onBellTask, onBellNote, inMemory,
         <span className="brand-name">Atlas</span>
         <button className="icon-btn" onClick={() => setSidebar(false)} title="Close sidebar">☰</button>
       </div>
-      <button className="btn newchat" onClick={() => createConversation()}>
-        <SquarePen size={15} /> New chat
-      </button>
-      <button className={`btn newchat ${inMemory ? 'active' : ''}`} onClick={onMemory}>
-        <Brain size={15} /> Memory
-      </button>
-      <button className={`btn newchat ${inNotes ? 'active' : ''}`} onClick={onNotes}>
-        <FileText size={15} /> Notes
-      </button>
-      <button className={`btn newchat ${inTasks ? 'active' : ''}`} onClick={onTasks}>
-        <CheckSquare size={15} /> Tasks
-      </button>
+      <div className="navgrid">
+        <button className={`btn navcell ${inChat ? 'active' : ''}`}
+          title="New chat (Ctrl+Shift+O)"
+          onClick={() => { createConversation().then(() => onChat()) }}>
+          <SquarePen size={16} /> New chat
+        </button>
+        <button className={`btn navcell ${inMemory ? 'active' : ''}`} onClick={onMemory}>
+          <Brain size={16} /> Memory
+        </button>
+        <button className={`btn navcell ${inNotes ? 'active' : ''}`} onClick={onNotes}>
+          <FileText size={16} /> Notes
+        </button>
+        <button className={`btn navcell ${inTasks ? 'active' : ''}`} onClick={onTasks}>
+          <CheckSquare size={16} /> Tasks
+        </button>
+      </div>
       <div className="searchbox">
         <Search size={14} />
         <input
@@ -188,7 +194,7 @@ function Sidebar({ onMemory, onNotes, onTasks, onBellTask, onBellNote, inMemory,
           <div
             key={c.id}
             className={`conv ${c.id === activeId ? 'active' : ''}`}
-            onClick={() => selectConversation(c.id)}
+            onClick={() => { selectConversation(c.id); onChat() }}
           >
             <div className="conv-title">{c.title || 'New conversation'}</div>
             <div className="conv-meta">

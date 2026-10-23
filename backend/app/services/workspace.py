@@ -194,10 +194,10 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"History search `{str(args.get('query', ''))[:100]}`"
     if name in ("get_source_message", "get_conversation_context", "get_memory_record"):
         return f"{name}"
-    if name in ("note_read", "task_get"):
-        return f"{name} `{str(args.get('path', args.get('task_id', '')))[:100]}`"
-    if name in ("note_write", "task_update"):
-        return f"{name} `{str(args.get('path', args.get('task_id', '')))[:100]}`"
+    if name in ("note_read", "note_create", "note_search", "note_list", "task_get", "task_list"):
+        return f"{name} `{str(args.get('path', args.get('query', args.get('task_id', ''))))[:100]}`"
+    if name in ("note_write", "task_create", "task_update", "task_transition", "reminder_create"):
+        return f"{name} `{str(args.get('path', args.get('title', args.get('task_id', ''))))[:100]}`"
     return name
 
 
@@ -208,9 +208,10 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
         return False, ""
     if name in ("search_memory", "search_chat_history", "get_source_message",
                 "get_conversation_context", "get_memory_report", "get_memory_record",
-                "note_read", "task_get"):
+                "note_read", "note_search", "note_list", "task_get", "task_list"):
         return False, ""  # read-only retrieval
-    if name in ("note_write", "task_update"):
+    if name in ("note_create", "note_write", "task_create", "task_update",
+                "task_transition", "reminder_create"):
         # Vault/task writes: follow the workspace auto-approve policy; the
         # vault service additionally enforces version-checked writes.
         return (not auto_approve,
@@ -245,7 +246,9 @@ async def run_tool(name: str, args: dict, root: Path, execution_id: str = "") ->
         if name == "get_memory_report":
             name = "get_memory_record"
         return await _memtools.run_memory_tool(name, args, scope)
-    if name in ("note_read", "note_write", "task_get", "task_update"):
+    if name in ("note_read", "note_create", "note_search", "note_list",
+                  "note_write", "task_create", "task_list", "task_get",
+                  "task_update", "task_transition", "reminder_create"):
         from . import noteagent as _na
         from . import memory as _scope_of
         try:

@@ -200,11 +200,11 @@ async def run_execution(execution_id: str) -> None:
                 _c = db.query_one("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND role='user'",
                                   (conv_id,))
                 onboard_turns = int(_c["n"]) if _c else 0
-                if onboard_turns >= 7:
+                if onboard_turns >= 6:
                     messages.append({"role": "user",
-                                     "content": "[SYSTEM — FINAL TURN] Write one warm closing line and then emit"
-                                     " the onboarding_complete fence NOW with everything learned."
-                                     " Do not ask more questions."})
+                                     "content": "[SYSTEM — FINAL TURNS] This interview must end soon. Either write your"
+                                     " warm closing line and the onboarding_complete fence NOW, or — if you truly"
+                                     " lack enough to profile — close warmly WITHOUT the fence and stop asking."})
             except Exception:
                 pass
         # Layer B/C/D: bounded cross-chat context + provenance refs.
@@ -533,6 +533,14 @@ async def run_execution(execution_id: str) -> None:
         await events.abroadcast(execution_id, "turn_completed",
                                 {"message_id": msg_id, "verification": verify_out})
         _finalize_message(msg_id, assistant_buf or "*Done.*")
+        try:
+            from . import onboarding as _ob
+            if onboarding_mode and onboard_turns >= 9 and not _ob.is_onboarded():
+                # Hard bound: ten user turns is enough patience. Stop looping;
+                # the user can re-run onboarding from Settings any time.
+                _ob.set_onboarded(True, how="max_turns")
+        except Exception:
+            pass
         try:
             from . import dream as _dream
             _dream.maybe_trigger_event(conv_id)

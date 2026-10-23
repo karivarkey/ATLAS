@@ -27,12 +27,23 @@ print("conv:", cid)
 
 def wait_done(eid, timeout=300):
     deadline = time.time() + timeout
+    s = {"status": "timeout", "current_step": 0}
     while time.time() < deadline:
         time.sleep(4)
         s = req("GET", f"/api/v1/executions/{eid}")
-        if s["status"] in ("completed", "failed", "cancelled", "timed_out"):
+        if s["status"] in ("completed", "failed", "cancelled", "timed_out", "interrupted"):
             return s
+        if s["status"] in ("waiting_input", "waiting_approval"):
+            try:
+                if s["status"] == "waiting_input":
+                    req("POST", f"/api/v1/executions/{eid}/answer",
+                        {"text": "Proceed with your best judgment."})
+                else:
+                    req("POST", f"/api/v1/executions/{eid}/approve", {"approved": True})
+            except Exception:
+                pass
         print(f"  ...{s['status']} step={s['current_step']}")
+    return s
 
 
 print("greeting:")
