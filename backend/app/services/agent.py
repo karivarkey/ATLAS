@@ -95,6 +95,17 @@ def extract_text_tool_calls(text: str) -> list[dict]:
     return out
 
 
+def _repeating_turn(text: str) -> bool:
+    """Detect a model repeating itself: the same sentence 3+ times in one turn."""
+    import re as _re
+    from collections import Counter as _Counter
+    sents = [s.strip().lower() for s in _re.split(r"(?<=[.!?])\s+", text or "")
+             if len(s.strip()) > 8]
+    if not sents:
+        return False
+    return any(v >= 3 for v in _Counter(sents).values())
+
+
 def _history(conversation_id: str, limit: int = 60) -> list[dict]:
     rows = db.query(
         "SELECT role, content, model FROM messages WHERE conversation_id = ?"
@@ -183,6 +194,19 @@ async def run_execution(execution_id: str) -> None:
         except Exception:
             pass
         onboarding_mode = bool(row["system_prompt"] and "setup guide" in row["system_prompt"])
+        onboard_turns = 0
+        if onboarding_mode:
+            try:
+                _c = db.query_one("SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND role='user'",
+                                  (conv_id,))
+                onboard_turns = int(_c["n"]) if _c else 0
+                if onboard_turns >= 7:
+                    messages.append({"role": "user",
+                                     "content": "[SYSTEM — FINAL TURN] Write one warm closing line and then emit"
+                                     " the onboarding_complete fence NOW with everything learned."
+                                     " Do not ask more questions."})
+            except Exception:
+                pass
         # Layer B/C/D: bounded cross-chat context + provenance refs.
         try:
             from . import embeddings as _emb
@@ -256,6 +280,7 @@ async def run_execution(execution_id: str) -> None:
         msg_id = _record_message(conv_id, "assistant", "", model_id, execution_id, "streaming")
         step = 0
         stuck = False
+        nudged_repeat = False
         seen_calls: dict[str, int] = {}
         last_modify_step = 0
         nudged = False
@@ -343,6 +368,20 @@ async def run_execution(execution_id: str) -> None:
                 messages.append({"role": "assistant", "content": text_delta_buf})
                 db.execute("UPDATE messages SET content = ? WHERE id = ?",
                            (assistant_buf, msg_id))
+                if _repeating_turn(text_delta_buf):
+                    if nudged_repeat:
+                        # Second offense: end the turn rather than loop forever.
+                        messages.append({"role": "user",
+                                         "content": "[SYSTEM] You repeated yourself again. End your"
+                                         " message now with a brief summary and, if this is onboarding,"
+                                         " the completion fence. Do not continue."})
+                        stuck = True
+                        break
+                    nudged_repeat = True
+                    messages.append({"role": "user",
+                                     "content": "[SYSTEM] You just repeated yourself (same sentences as before)."
+                                     " Do not restate anything. Ask ONE new question or, if you have enough,"
+                                     " write the closing line and the completion fence."})
 
             if not tool_calls and text_delta_buf:
                 # Fallback: some small models emit fenced-JSON tool calls.

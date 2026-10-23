@@ -28,6 +28,21 @@ function dedupe(blocks: Block[]): Block[] {
   return out
 }
 
+// Drop consecutively repeated sentences inside a paragraph
+// ("Got it, Gee. Got it, Gee." → "Got it, Gee.").
+export function dedupeSentences(text: string): string {
+  const parts = text.split(/(?<=[.!?…])\s+(?=[A-Z0-9"'“(\[])/)
+  const out: string[] = []
+  let prev = ''
+  for (const p of parts) {
+    const key = p.trim().toLowerCase()
+    if (key && key === prev) continue
+    prev = key
+    out.push(p)
+  }
+  return out.join(' ').replace(/\s{2,}/g, ' ')
+}
+
 type Block =
   | { kind: 'code'; lang: string; code: string; open: boolean }
   | { kind: 'table'; rows: string[][] }

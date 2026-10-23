@@ -1,7 +1,7 @@
 import { Check, Loader2, Send, Sparkles, X } from 'lucide-react'
 import React, { useEffect, useRef, useState } from 'react'
 import { api, ChatMessage } from './api'
-import { Markdown } from './markdown'
+import { Markdown, dedupeSentences } from './markdown'
 import { useExecutionStream } from './useStream'
 
 export function OnboardingWizard({ onDone }: { onDone: () => void }) {
@@ -106,7 +106,7 @@ export function OnboardingWizard({ onDone }: { onDone: () => void }) {
               ) : (
                 <>
                   <div className="avatar">A</div>
-                  <div className="bubble"><Markdown text={m.content} /></div>
+                  <div className="bubble"><Markdown text={dedupeSentences(m.content)} /></div>
                 </>
               )}
             </div>

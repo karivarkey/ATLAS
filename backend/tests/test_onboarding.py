@@ -82,6 +82,47 @@ def test_execution_finish_marks_onboarded(tmp_path, monkeypatch):
     assert "Test User" in mf.read_file("USER.md")
 
 
+def test_repeating_turn_detector(tmp_path, monkeypatch):
+    from app.services.agent import _repeating_turn
+    _setup(tmp_path, monkeypatch)
+    assert _repeating_turn("Got it, Gee. Got it, Gee. Got it, Gee.") is True
+    assert _repeating_turn("Hello there, nice to meet you!") is False
+    assert _repeating_turn("") is False
+    assert _repeating_turn("Short. Tiny. Small.") is False
+
+
+def test_repetition_breaks_loop_early(tmp_path, monkeypatch):
+    """A model stuck repeating itself terminates early instead of looping."""
+    from app import events as _ev
+    from app.services import executions as _exec
+
+    _setup(tmp_path, monkeypatch)
+
+    async def loopy(model, messages, session_id=""):
+        yield {"text": ("Let us proceed with the onboarding interview process "
+                        "for new users today. ") * 3}
+
+    monkeypatch.setattr(providers, "complete", loopy)
+    now = db.now_ms()
+    db.execute("INSERT INTO conversations (id, title, model, scope_id, memory_excluded,"
+               " workspace_id, created_at, updated_at)"
+               " VALUES ('rep1', 'Getting to know you', 'stub/m', 'user:default', 0, 'rep1', ?, ?)",
+               (now, now))
+    db.execute("INSERT INTO executions (id, conversation_id, status, model, workspace_id,"
+               " input_text, current_step, max_steps, pending_json, error, started_at, updated_at,"
+               " ended_at, system_prompt) VALUES ('exe_rep1', 'rep1', 'queued', 'stub/m', 'rep1',"
+               " 'hi', 0, 60, '{}', '', ?, ?, 0, ?)",
+               (now, now, onboarding.ONBOARD_PROMPT))
+
+    async def main():
+        await _exec._supervised_run("exe_rep1", "rep1")
+
+    asyncio.run(main())
+    snap = _exec.get_snapshot("exe_rep1")
+    assert snap["status"] == "completed", snap
+    assert snap["current_step"] <= 6, snap  # loop broken, not budget-exhausted
+
+
 def test_skip_and_reopen(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     assert onboarding.is_onboarded() is False

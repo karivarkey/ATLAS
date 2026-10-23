@@ -55,6 +55,14 @@ async def submit(conversation_id: str, user_text: str, model: str,
         db.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id))
 
     execution_id = db.new_id("exe")
+    if not system_prompt:
+        # Inherit the conversation's system prompt (e.g. onboarding interview)
+        # so follow-up turns keep the same instructions and mode.
+        prev = db.query_one("SELECT system_prompt FROM executions WHERE conversation_id = ?"
+                            " AND system_prompt != '' ORDER BY updated_at DESC LIMIT 1",
+                            (conversation_id,))
+        if prev:
+            system_prompt = prev["system_prompt"]
     ws_id = conv["workspace_id"] or conversation_id
     db.execute(
         "INSERT INTO executions (id, conversation_id, status, model, workspace_id,"

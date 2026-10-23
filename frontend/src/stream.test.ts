@@ -59,4 +59,10 @@ describe('stream event routing', () => {
     s = apply(s, { type: 'status_changed', payload: { to: 'running' } })
     expect(s.status).toBe('running')
   })
+
+  it('dedupeSentences collapses consecutive repeats', async () => {
+    const { dedupeSentences } = await import('./markdown')
+    expect(dedupeSentences('Got it, Gee. Got it, Gee. Got it, Gee.')).toBe('Got it, Gee.')
+    expect(dedupeSentences('Hello! How are you?')).toBe('Hello! How are you?')
+  })
 })
