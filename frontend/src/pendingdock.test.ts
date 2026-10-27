@@ -41,7 +41,7 @@ describe('pending dock routing', () => {
     expect(html).toContain('<input')
   })
 
-  it('approval renders YES / NO plus reason and command summary', () => {
+  it('approval renders Approve / Deny plus reason and command summary', () => {
     const html = renderToString(
       React.createElement(PendingDock, {
         convId: 'c1',
@@ -54,8 +54,8 @@ describe('pending dock routing', () => {
         },
       }),
     )
-    expect(html).toContain('YES')
-    expect(html).toContain('NO')
+    expect(html).toContain('Approve')
+    expect(html).toContain('Deny')
     expect(html).toContain('destructive')
     expect(html).toContain('rm -rf /tmp/x')
   })

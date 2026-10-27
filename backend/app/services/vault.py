@@ -74,26 +74,64 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
 
     Only simple ``key: value`` lines are parsed; unknown keys are preserved
     verbatim on write by merging (see _merge_frontmatter).
+
+    Handles both canonical multi-line form::
+
+        ---
+        id: note_abc
+        title: Demo
+        ---
+
+        body…
+
+    and legacy compact single-line forms like ``--- id: note_abc ---`` or
+    ``--- id: note_abc`` (old clients wrote these; preview used to leak them).
     """
     text = text or ""
-    if not text.startswith("---\n"):
+    if text.startswith("\ufeff"):
+        text = text.lstrip("\ufeff")
+    # Compact single-line: --- k: v ---  (or without trailing ---)
+    if text.startswith("---") and not text.startswith("---\n") and not text.startswith("---\r"):
+        first_nl = text.find("\n")
+        first_line = text if first_nl < 0 else text[:first_nl]
+        inner = first_line.strip()[3:].strip()
+        if inner.endswith("---"):
+            inner = inner[:-3].strip()
+        # Only treat as frontmatter when it looks like key: value pairs.
+        fm: dict[str, str] = {}
+        if re.match(r"^[A-Za-z0-9_\-]+\s*:", inner):
+            for chunk in re.split(r"\s{2,}|\t|,(?=[A-Za-z0-9_\-]+\s*:)", inner):
+                m = re.match(r"^([A-Za-z0-9_\-]+)\s*:\s*(.*)$", chunk.strip())
+                if m:
+                    fm[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+            if fm:
+                rest = "" if first_nl < 0 else text[first_nl + 1:]
+                return fm, rest.lstrip("\n")
+        return {}, text
+    if not (text.startswith("---\n") or text.startswith("---\r")):
         return {}, text
     lines = text.split("\n")
     end = -1
     for i in range(1, min(len(lines), 60)):
-        if lines[i].strip() == "---":
+        if lines[i].strip() in ("---", "..."):
             end = i
             break
     if end < 0:
         return {}, text
-    fm: dict[str, str] = {}
+    fm = {}
     for line in lines[1:end]:
         if not line.strip() or line.strip().startswith("#"):
             continue
-        m = re.match(r"^([A-Za-z0-9_\-]+)\s*:\s*(.*)$", line)
+        m = re.match(r"^\s*([A-Za-z0-9_\-]+)\s*:\s*(.*)$", line)
         if m:
             fm[m.group(1)] = m.group(2).strip().strip('"').strip("'")
     return fm, "\n".join(lines[end + 1:])
+
+
+def strip_frontmatter(text: str) -> str:
+    """Return the body with any frontmatter removed (for preview/word-count)."""
+    _, body = split_frontmatter(text or "")
+    return body
 
 
 def _dump_frontmatter(fm: dict, body: str) -> str:
@@ -384,6 +422,243 @@ def make_folder(path: str) -> dict:
     d = resolve(rel)
     d.mkdir(parents=True, exist_ok=True)
     return {"ok": True, "path": rel}
+
+
+def _is_note_rel(rel: str) -> bool:
+    return rel.lower().endswith(".md")
+
+
+def copy_note(src: str, dst: str, actor: str = "user") -> dict:
+    """Duplicate a note to a new path with a FRESH stable id."""
+    src_rel, dst_rel = normalize(src), normalize(dst)
+    if not _is_note_rel(dst_rel):
+        raise ValueError("notes must end with .md")
+    row = note_by_path(src_rel)
+    if not row:
+        raise KeyError(f"note not found: {src_rel}")
+    if note_by_path(dst_rel) or resolve(dst_rel).exists():
+        raise ValueError(f"note already exists: {dst_rel}")
+    content = resolve(src_rel).read_text(encoding="utf-8", errors="replace")
+    fm, body = split_frontmatter(content)
+    fm["id"] = f"note_{uuid.uuid4().hex[:12]}"
+    if "title" not in fm:
+        fm["title"] = _title_of({}, body, src_rel)
+    content = _dump_frontmatter(fm, body)
+    h = _hash(content)
+    now = db.now_ms()
+    atomic_write(resolve(dst_rel), content)
+    mtime = int(resolve(dst_rel).stat().st_mtime * 1000)
+    db.execute(
+        "INSERT INTO notes (id, path, title, content_hash, version, file_mtime, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+        (fm["id"], dst_rel, _title_of(fm, body, dst_rel), h, mtime, now, now),
+    )
+    _insert_version(fm["id"], 1, content, h, actor)
+    db.audit("vault.copy", {"from": src_rel, "to": dst_rel, "id": fm["id"]}, actor=actor)
+    return get_note(dst_rel)
+
+
+def delete_folder(path: str, actor: str = "user") -> dict:
+    """Recursively delete a vault folder (notes + subfolders). No trash."""
+    import shutil
+
+    rel = normalize(path)
+    d = resolve(rel)
+    if not d.exists() or not d.is_dir():
+        raise KeyError(f"folder not found: {rel}")
+    if rel == "" or rel == ".":
+        raise ValueError("refusing to delete vault root")
+    removed: list[str] = []
+    for r in db.query("SELECT * FROM notes WHERE path = ? OR path LIKE ?", (rel, rel + "/%")):
+        removed.append(r["path"])
+    shutil.rmtree(d, ignore_errors=False)
+    for p in removed:
+        row = note_by_path(p)
+        if row:
+            db.execute("DELETE FROM notes WHERE id = ?", (row["id"],))
+            db.execute("DELETE FROM note_reads WHERE note_id = ?", (row["id"],))
+    db.audit("vault.folder_delete", {"path": rel, "removed": len(removed)}, actor=actor)
+    return {"ok": True, "path": rel, "removed": removed}
+
+
+def move_folder(src: str, dst: str, actor: str = "user") -> dict:
+    """Rename / move a whole folder, updating the index + wikilinks."""
+    rel_src, rel_dst = normalize(src), normalize(dst)
+    s, d = resolve(rel_src), resolve(rel_dst)
+    if not s.exists() or not s.is_dir():
+        raise KeyError(f"folder not found: {rel_src}")
+    if d.exists():
+        raise ValueError(f"folder already exists: {rel_dst}")
+    if rel_dst == rel_src or rel_dst.startswith(rel_src + "/"):
+        raise ValueError("cannot move a folder inside itself")
+    d.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(s, d)
+    moved: list[dict] = []
+    for r in db.query("SELECT * FROM notes WHERE path = ? OR path LIKE ?", (rel_src, rel_src + "/%")):
+        old_p = r["path"]
+        new_p = rel_dst + old_p[len(rel_src):]
+        mtime = int(resolve(new_p).stat().st_mtime * 1000) if resolve(new_p).exists() else db.now_ms()
+        db.execute("UPDATE notes SET path = ?, file_mtime = ?, updated_at = ? WHERE id = ?",
+                   (new_p, mtime, db.now_ms(), r["id"]))
+        moved.append({"from": old_p, "to": new_p})
+    db.audit("vault.folder_move", {"from": rel_src, "to": rel_dst, "moved": len(moved)}, actor=actor)
+    for m in moved:
+        try:
+            rewrite_references(m["from"], m["to"], actor=f"rename:{actor}")
+        except Exception:
+            pass
+    return {"ok": True, "from": rel_src, "to": rel_dst, "moved": moved}
+
+
+def copy_folder(src: str, dst: str, actor: str = "user") -> dict:
+    """Deep-copy a folder; every copied note gets a fresh stable id."""
+    import shutil
+
+    rel_src, rel_dst = normalize(src), normalize(dst)
+    s, d = resolve(rel_src), resolve(rel_dst)
+    if not s.exists() or not s.is_dir():
+        raise KeyError(f"folder not found: {rel_src}")
+    if d.exists():
+        raise ValueError(f"folder already exists: {rel_dst}")
+    if rel_dst == rel_src or rel_dst.startswith(rel_src + "/"):
+        raise ValueError("cannot copy a folder inside itself")
+    shutil.copytree(s, d)
+    copied: list[str] = []
+    for f in sorted(d.rglob("*.md")):
+        if ".tmp-" in f.name:
+            continue
+        # d is already resolved; relativize against it (not a fresh
+        # vault_root() call — on Windows resolve() may return 8.3 short
+        # names that break relative_to against the unresolved root).
+        rel = (rel_dst + "/" + f.relative_to(d).as_posix()).strip("/")
+        content = f.read_text(encoding="utf-8", errors="replace")
+        fm, body = split_frontmatter(content)
+        fm["id"] = f"note_{uuid.uuid4().hex[:12]}"
+        content2 = _dump_frontmatter(fm, body)
+        if content2 != content:
+            atomic_write(f, content2)
+            content = content2
+        h = _hash(content)
+        now = db.now_ms()
+        mtime = int(f.stat().st_mtime * 1000)
+        if note_by_path(rel):
+            continue
+        db.execute(
+            "INSERT INTO notes (id, path, title, content_hash, version, file_mtime, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            (fm["id"], rel, _title_of(fm, body, rel), h, mtime, now, now))
+        _insert_version(fm["id"], 1, content, h, actor)
+        copied.append(rel)
+    db.audit("vault.folder_copy", {"from": rel_src, "to": rel_dst, "copied": len(copied)}, actor=actor)
+    return {"ok": True, "from": rel_src, "to": rel_dst, "copied": copied}
+
+
+def _tokens(s: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (s or "").lower())
+
+
+def hybrid_note_search(q: str, limit: int = 25, query_vec: list[float] | None = None,
+                       doc_vecs: dict[str, list[float]] | None = None) -> list[dict]:
+    """Lexical-first semantic-ish search over notes.
+
+    Scores title/path matches higher than body matches, adds token-overlap
+    (poor-man's semantics that catches e.g. 'upselling tasks' → notes about
+    'upsell playbook' even without shared bigrams), then fuses optional
+    embedding cosine scores via reciprocal-rank fusion. Always works
+    lexically; ``query_vec``/``doc_vecs`` only boost ranking when present.
+    """
+    q = (q or "").strip()
+    if not q:
+        return []
+    qtok = _tokens(q)
+    qset = set(qtok)
+    lex_scored: list[tuple[float, dict]] = []
+    for r in _all_note_paths():
+        try:
+            content = resolve(r["path"]).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        _, body = split_frontmatter(content)
+        title_l = (r["title"] or "").lower()
+        path_l = r["path"].lower()
+        body_l = body.lower()
+        score = 0.0
+        ql = q.lower()
+        if ql in title_l:
+            score += 5.0
+        if ql in path_l:
+            score += 3.0
+        if ql in body_l:
+            # earlier + more frequent = better; cap frequency contribution
+            score += 2.0 + min(2.0, body_l.count(ql) * 0.4)
+        bt = _tokens(f"{r['title']} {body[:4000]}")
+        if bt and qset:
+            overlap = len(qset & set(bt)) / max(1, len(qset))
+            score += overlap * 4.0
+        if score <= 0:
+            continue
+        idx = body_l.find(ql)
+        if idx < 0:
+            # snippet around first overlapping token
+            idx = 0
+            for t in qtok:
+                j = body_l.find(t)
+                if j >= 0:
+                    idx = j
+                    break
+        start = max(0, idx - 80)
+        snippet = re.sub(r"\s+", " ", body[start:start + 220]).strip()
+        lex_scored.append((score, {"path": r["path"], "title": r["title"], "id": r["id"],
+                                  "score": round(score, 3), "snippet": snippet,
+                                  "via": ["lexical"]}))
+    lex_scored.sort(key=lambda x: (-x[0], x[1]["path"]))
+    ranked = [h for _, h in lex_scored[: max(limit * 2, limit)]]
+    # Fuse embedding ranking when vectors are available.
+    if query_vec and doc_vecs:
+        import math
+
+        def cos(a: list[float], b: list[float]) -> float:
+            n = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(x * x for x in b))
+            if not n:
+                return 0.0
+            return sum(x * y for x, y in zip(a, b)) / n
+
+        vec_ranked = sorted(
+            ((cos(query_vec, v), p) for p, v in doc_vecs.items() if v),
+            key=lambda x: -x[0])
+        rrf: dict[str, dict] = {}
+        for rank, h in enumerate(ranked):
+            f = rrf.setdefault(h["path"], {**h, "rrf": 0.0, "via": []})
+            f["rrf"] += 1.0 / (60 + rank)
+            f["via"].append("lexical")
+        for rank, (s, p) in enumerate(vec_ranked):
+            if s <= 0.05:
+                continue
+            base = next((h for h in ranked if h["path"] == p), None)
+            if base is None:
+                try:
+                    row = note_by_path(p)
+                    if not row:
+                        continue
+                    content = resolve(p).read_text(encoding="utf-8", errors="replace")
+                    _, body = split_frontmatter(content)
+                    base = {"path": p, "title": row["title"], "id": row["id"],
+                            "score": 0.0, "snippet": re.sub(r"\s+", " ", body[:220]),
+                            "via": []}
+                except OSError:
+                    continue
+            f = rrf.setdefault(p, {**base, "rrf": 0.0, "via": []})
+            f["rrf"] += 1.0 / (60 + rank)
+            if "vector" not in f["via"]:
+                f["via"].append("vector")
+        fused = sorted(rrf.values(), key=lambda x: -x["rrf"])
+        out = []
+        for h in fused[:limit]:
+            out.append({"path": h["path"], "title": h.get("title", ""),
+                        "id": h.get("id"), "score": round(float(h["rrf"]), 4),
+                        "snippet": h.get("snippet", ""), "via": h.get("via", [])})
+        return out
+    return [{**h, "via": h.get("via", ["lexical"])} for h in ranked[:limit]]
 
 
 # ---------------- links ----------------

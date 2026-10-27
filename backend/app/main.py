@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config, db
 from .routers import conversations, executions
 from .routers import memory as memory_router
+from .routers import jira as jira_router
 from .routers import notes as notes_router
 from .routers import tasks as tasks_router
 from .routers import onboarding as onboarding_router
@@ -63,6 +64,7 @@ app.add_middleware(
 
 app.include_router(conversations.router)
 app.include_router(executions.router)
+app.include_router(jira_router.router)
 app.include_router(notes_router.router)
 app.include_router(tasks_router.router)
 app.include_router(stt_router.router)

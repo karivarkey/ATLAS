@@ -83,15 +83,16 @@ def test_c_dream_extracts_records_and_updates_user(tmp_path, monkeypatch):
     kinds = {(r["memory_type"], r["subject"], r["predicate"]) for r in recs}
     assert ("preference", "user", "likes") in kinds
     assert ("decision", "atlas", "memory_backend") in kinds
-    # low-confidence rule_proposal stays proposed, not active
+    # direct-write: even low-confidence facts go active, no confirmations
+    assert ("rule_proposal", "agent", "verify") in kinds
     props = db.query("SELECT * FROM memory_proposals WHERE job_id = ?", (jid,))
-    assert any(p["kind"] == "soul" and p["status"] == "proposed" for p in props)
+    assert props and all(p["status"] == "applied" for p in props)
     user = db.query_one("SELECT content FROM memory_file_versions WHERE path='USER.md'"
                         " ORDER BY version DESC LIMIT 1")
     assert "dark mode" in user["content"].lower()
     soul = db.query_one("SELECT content FROM memory_file_versions WHERE path='SOUL.md'"
                         " ORDER BY version DESC LIMIT 1")
-    assert "Verify before claiming success." not in soul["content"]  # requires approval
+    assert "Verify before claiming success." in soul["content"]  # dream writes directly
     # rerun over same watermark: nothing new → completed with 0 messages
     res2 = dream.trigger("manual", ["dA"])
     asyncio.run(dream._run(res2["job_id"]))

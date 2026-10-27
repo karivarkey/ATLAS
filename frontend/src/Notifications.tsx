@@ -28,6 +28,13 @@ export function Notifications({ onOpenTask, onOpenNote, pollMs = 15000 }: Props)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, pollMs])
 
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open ])
+
   const act = async (n: Notification, kind: 'read' | 'dismiss') => {
     if (kind === 'read') await tasksApi.markRead(n.id)
     else await tasksApi.dismiss(n.id)
@@ -42,46 +49,44 @@ export function Notifications({ onOpenTask, onOpenNote, pollMs = 15000 }: Props)
 
   return (
     <div style={{ position: 'relative' }}>
-      <button className="icon-btn" title="Notifications" onClick={() => setOpen((o) => !o)}
+      <button className="icon-btn" title="Notifications" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
+        aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((o) => !o)}
         style={{ position: 'relative' }}>
         <Bell size={16} />
         {unread > 0 && (
-          <span style={{ position: 'absolute', top: -4, right: -6, background: 'var(--err)',
-            color: '#fff', fontSize: 10, borderRadius: 10, padding: '0 5px',
-            minWidth: 16, textAlign: 'center' }}>{unread > 99 ? '99+' : unread}</span>
+          <span className="badge" aria-hidden="true">{unread > 99 ? '99+' : unread}</span>
         )}
       </button>
       {open && (
         <>
           <div className="notif-backdrop" onClick={() => setOpen(false)} />
-          <div className="notif-pop" onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '2px 6px 8px' }}>
-            <b>Notifications {unread > 0 && `(${unread} unread)`}</b>
-            <button className="mini-btn" onClick={() => setOpen(false)}>close</button>
-          </div>
-          {items.filter((n) => n.status === 'unread').length === 0 &&
-            <div className="muted pad small">All caught up.</div>}
-          {items.map((n) => (
-            <div key={n.id} className="mem-result"
-              style={{ opacity: n.status === 'unread' ? 1 : 0.65, marginBottom: 6, padding: 8 }}>
-              <div style={{ fontSize: 13, fontWeight: n.status === 'unread' ? 600 : 400 }}>
-                {n.status === 'unread' ? '● ' : ''}{n.title}
-              </div>
-              {n.body && <div className="muted small">{n.body}</div>}
-              <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-                {(n.task_id || n.note_id) && (
-                  <button className="mini-btn" onClick={() => jump(n)}>open</button>
-                )}
-                {n.status === 'unread' && (
-                  <button className="mini-btn" onClick={() => act(n, 'read')}>mark read</button>
-                )}
-                {n.status !== 'dismissed' && (
-                  <button className="mini-btn" onClick={() => act(n, 'dismiss')}>dismiss</button>
-                )}
-              </div>
+          <div className="notif-pop" role="dialog" aria-label="Notifications"
+            onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}>
+            <div className="notif-head">
+              <span>Notifications {unread > 0 && `(${unread} unread)`}</span>
+              <button className="mini-btn" onClick={() => setOpen(false)}>close</button>
             </div>
-          ))}
+            {items.filter((n) => n.status === 'unread').length === 0 &&
+              <div className="muted pad small">All caught up.</div>}
+            {items.map((n) => (
+              <div key={n.id} className={`notif-item ${n.status === 'unread' ? 'unread' : 'read'}`}>
+                <div className="notif-item-t">
+                  {n.status === 'unread' ? '● ' : ''}{n.title}
+                </div>
+                {n.body && <div className="muted small">{n.body}</div>}
+                <div className="notif-actions">
+                  {(n.task_id || n.note_id) && (
+                    <button className="mini-btn" onClick={() => jump(n)}>open</button>
+                  )}
+                  {n.status === 'unread' && (
+                    <button className="mini-btn" onClick={() => act(n, 'read')}>mark read</button>
+                  )}
+                  {n.status !== 'dismissed' && (
+                    <button className="mini-btn" onClick={() => act(n, 'dismiss')}>dismiss</button>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         </>
       )}

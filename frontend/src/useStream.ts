@@ -32,6 +32,7 @@ export function useExecutionStream(convId: string | null, executionId: string | 
           }
         }
         if (doneRef.current) {
+          try { await useStore.getState().loadConversations() } catch { /* ignore */ }
           // Refresh persisted messages so the final assistant text is durable,
           // and drop the streamed text (the persisted message now owns it —
           // rendering both would duplicate the answer).
@@ -64,6 +65,7 @@ export function useExecutionStream(convId: string | null, executionId: string | 
             if (['turn_completed', 'turn_failed', 'cancelled'].includes(ev.type)) {
               doneRef.current = true
               es?.close()
+              try { await useStore.getState().loadConversations() } catch { /* ignore */ }
               const { messages } = await api.listMessages(convId)
               useStore.setState((s) => ({
                 chats: { ...s.chats, [convId]: { ...(s.chats[convId]!),

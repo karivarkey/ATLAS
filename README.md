@@ -1,154 +1,166 @@
-# Atlas — agentic coding environment
+# ATLAS — Agentic Coding Environment
 
-A production-grade, ChatGPT-quality agentic harness: real tool-using agents,
+![Status](https://img.shields.io/badge/status-work_in_progress-yellow)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
+![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688)
+![React](https://img.shields.io/badge/frontend-React%20%2B%20Vite%20%2B%20TS-61dafb)
+![SQLite](https://img.shields.io/badge/storage-SQLite-003b57)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+> ⚠️ **Work in progress.** ATLAS is under active development — APIs, schemas,
+> and UI are subject to change. Do not use with untrusted workspace content
+> yet; review the [Security](#-security) section before running.
+
+ATLAS is a self-hosted, ChatGPT-grade agentic harness: real tool-using agents,
 multi-conversation concurrency, streaming tool visibility, durable SQLite
-persistence, and OpenCode Go model discovery.
+persistence, and multi-provider model routing (hosted + local Ollama).
 
-## Quick start (Windows)
+![ATLAS concept](https://img.shields.io/badge/UI-chat%20%2B%20executions%20%2B%20memory%20%2B%20vault-lightgrey)
+
+---
+
+## ✨ Features
+
+- **Real tool-using agents** — read / write / edit / glob / grep / shell /
+  git operations executed in per-conversation sandboxes, with approvals,
+  `ask_user` questions, pause/resume, bounded retries, and a verification pass.
+- **Multi-conversation concurrency** — fair scheduling with a global semaphore
+  plus per-conversation locks; SSE event streams with replay.
+- **Streaming tool visibility** — every tool call renders as a live card with
+  real output; chat composer with voice input (AssemblyAI STT).
+- **Layered memory engine** — immutable chat archive + hybrid retrieval
+  (FTS5 lexical + Ollama embeddings + recency via RRF), SOUL.md/USER.md with
+  approvals and version history, plus a background "dream" consolidation engine.
+- **Knowledge vault + tasks** — Obsidian-style Markdown vault (files are the
+  source of truth, SQLite holds the index) with wikilinks, versions, and
+  rollback; AI-executable tasks with a guarded state machine and
+  verify-to-complete semantics.
+- **Integrations** — Jira (browse, transition, comment), web search via
+  self-hosted SearXNG (DuckDuckGo fallback), workspaces, notifications.
+- **Multi-provider models** — hosted model discovery with per-model protocol
+  routing, transparent fallback to local Ollama models, honest stale-catalog
+  reporting instead of fake data.
+
+## 🚀 Quick start
+
+**Prerequisites:** Python 3.12+, [Bun](https://bun.sh) (frontend build),
+[Ollama](https://ollama.com) (local models/embeddings, optional),
+[Docker](https://www.docker.com) (self-hosted SearXNG, optional).
+
+### Windows (easiest)
 
 ```bat
 start.bat
 ```
 
-Then open **http://127.0.0.1:8765** (backend serves the built frontend).
+Then open **http://127.0.0.1:8765** — the backend serves the built frontend.
 
-## Local search engine (SearXNG, Docker)
-
-`web_search` / `web_research` use a self-hosted SearXNG (no rate limits).
-Atlas expects it at `ATLAS_SEARXNG_URL` (default `http://localhost:8888`).
+### Manual
 
 ```sh
-docker run -d --name searxng --restart unless-stopped -p 8888:8080 -v ./searxng:/etc/searxng searxng/searxng:latest
+# Backend
+cd backend
+pip install -r requirements.txt
+python -m uvicorn app.main:app --port 8765 --app-dir .
+
+# Frontend (dev with hot reload)
+cd frontend
+bun install
+bun run dev          # http://localhost:5173 (proxies /api to the backend)
 ```
 
-with `searxng/settings.yml`:
+### Local search engine (SearXNG, optional)
 
-```yaml
-use_default_settings: true
-server:
-  secret_key: "<random-hex>"   # generate your own, keep it local
-  limiter: false
-search:
-  formats: [html, json]        # json is what Atlas calls
+`web_search` / `web_research` use a self-hosted SearXNG (no rate limits) at
+`ATLAS_SEARXNG_URL` (default `http://localhost:8888`):
+
+```sh
+docker run -d --name searxng --restart unless-stopped \
+  -p 8888:8080 -v ./searxng:/etc/searxng searxng/searxng:latest
 ```
 
 If SearXNG is unreachable, search transparently falls back to DuckDuckGo
 (responses are labeled `[via duckduckgo fallback]`).
 
-## Voice input
+## ⚙️ Configuration
 
-The composer has a mic button: record → audio posts to
-`POST /api/v1/stt/transcribe` → AssemblyAI (`universal-2`, English-only)
-returns text into the draft. Key lives in gitignored `backend/.env.local`
-(`ASSEMBLYAI_API_KEY`), never in the repo or browser.
+Copy `.env.example` to environment variables — **never commit secrets**
+(see [Security](#-security)):
 
-## Memory engine (Layers A–D)
+| Variable | Required | Description |
+|---|---|---|
+| `OPENCODE_ZEN_API_KEY` | For hosted models | API key for hosted model catalog |
+| `OLLAMA_BASE` | No | Local models (default `http://localhost:11434`) |
+| `ASSEMBLYAI_API_KEY` | For voice input | Server-side only, STT (`universal-2`) |
+| `ATLAS_SEARXNG_URL` | No | Self-hosted search (default `http://localhost:8888`) |
+| `ATLAS_DEFAULT_MODEL` | No | Default model id |
+| `ATLAS_MAX_CONCURRENT` / `ATLAS_MAX_STEPS` | No | Concurrency and step budgets |
+| `ATLAS_SERVER_PASSWORD` | No | Password-gate the server |
+| `ATLAS_DATA_DIR` / `ATLAS_DB_PATH` | No | Data locations (defaults `./data`, `./data/atlas.db`) |
 
-Every chat is archived immutably (Layer A) and indexed: FTS5 lexical search
-works immediately after commit; `qwen3-embedding:0.6b` vectors (1024-dim,
-Ollama `/api/embed`) are filled in by a background worker with retries and
-backlog diagnostics. Retrieval is hybrid RRF (lexical + vector + recency).
-The agent gets SOUL.md + USER.md + top memories with provenance refs.
+Without a hosted key, the app shows an onboarding banner and serves local
+Ollama models; the catalog endpoint reports `stale: true` with the exact
+error instead of pretending to be current.
 
-- Structured records + proposals: `GET /api/v1/memory/records`, approve/reject
-  SOUL.md changes in the Memory view (SOUL changes always require approval).
-- Dream Engine: `POST /api/v1/memory/dream` (manual), event trigger after
-  substantial chats, daily 03:00 scheduler (`ATLAS_DREAM_AT`). Low-risk facts
-  auto-apply; contradictions supersede with history preserved.
-- Vector store is SQLite (float32 BLOB + numpy cosine) — a deliberate
-  equivalent to pgvector for this single-node app: zero extra services,
-  transactional with the archive, hermetic tests. Swap `memory.py` if needed.
-- Exclude a chat via the drawer toggle or `PATCH /conversations/:id`
-  `{"memory_excluded": true}` — excluded chats are never indexed or dreamed.
-- UI: sidebar **Memory** (search, knowledge, SOUL.md/USER.md + version
-  history + rollback, dream jobs + health), per-run memory refs in the drawer.
-For frontend dev with hot reload:
+## 🏗️ Architecture
 
-```sh
-cd frontend && bun install && bun run dev   # http://localhost:5173
+```
+ATLAS/
+├── backend/               # FastAPI API (/api/v1), SQLite persistence (WAL)
+│   └── app/
+│       ├── main.py        # App wiring: CORS, error handling, static frontend
+│       ├── routers/       # conversations, executions, memory, notes, tasks,
+│       │                  # workspaces, jira, stt, onboarding
+│       └── services/      # agent loop, providers/model catalog, executions,
+│                          # memory + embeddings + dream engine, vault,
+│                          # webtools, workspace sandboxing
+├── frontend/              # React + Vite + TypeScript + Zustand
+│   └── src/               # sidebar, model picker, streaming composer,
+│                          # tool cards, execution drawer, notes/tasks views
+├── docs/                  # ARCHITECTURE.md, FINAL_REPORT.md, JIRA.md, ...
+└── data/ · vault/ · workspaces/   # local-only runtime data (gitignored)
 ```
 
-Backend dev:
+- **Runtime model:** `submit()` → execution row (`queued`) → asyncio task
+  under a global semaphore + per-conversation lock → state machine
+  (`queued → starting → running → (waiting_input | waiting_approval | paused)
+  → verifying → completed`, with `failed / cancelled / timed_out /
+  interrupted` terminals).
+- **Memory:** every chat archived immutably, indexed with FTS5 immediately
+  and `qwen3-embedding` vectors via a background worker; retrieval is hybrid
+  RRF (lexical + vector + recency). SQLite vector store (float32 BLOB + numpy
+  cosine) — a deliberate pgvector equivalent for a single node: zero extra
+  services, transactional with the archive.
+- **Single-process Python backend** (FastAPI + stdlib sqlite3) with
+  seam-separated execution/persistence interfaces, so a multi-worker rollout
+  stays possible without rewrites.
 
-```sh
-cd backend && pip install -r requirements.txt
-python -m uvicorn app.main:app --port 8765 --app-dir backend
-```
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full decision log.
 
-## Configuration
-
-Copy `.env.example` to real environment variables (never commit secrets):
-
-- `OPENCODE_ZEN_API_KEY` — required for OpenCode Go live models.
-- `OLLAMA_BASE` — local models (default `http://localhost:11434`).
-- `ATLAS_DEFAULT_MODEL`, `ATLAS_MAX_CONCURRENT`, `ATLAS_MAX_STEPS`, …
-
-If no key is configured, the app shows an onboarding banner and serves
-local Ollama models; the catalog endpoint reports `stale: true` with the
-exact error instead of pretending to be current.
-
-## What was built
-
-- `backend/app` — FastAPI API (`/api/v1`), SQLite persistence, SSE event
-  streams with replay, per-execution state machines, concurrency manager.
-- `backend/app/services/model_catalog.py` — OpenCode Go discovery
-  (`GET {base}/models`, Bearer auth), normalization, TTL cache, per-model
-  protocol routing (responses / chat_completions / messages), Ollama fallback.
-- `backend/app/services/agent.py` — tool-call loop (read/write/edit/list/
-  glob/grep/shell/git-clone), approvals, `ask_user` questions, pause/resume,
-  bounded retries, verification pass.
-- `frontend/src` — React + Vite + TypeScript + Zustand: sidebar, model picker,
-  streaming composer, tool cards, execution drawer, settings, SSE hook with
-  reconnect + dedupe.
-
-## Knowledge base (Obsidian-style vault) + AI task management
-
-Vault root is `./vault` (override with `ATLAS_VAULT_DIR`; gitignored). Real
-Markdown files are the source of truth; SQLite holds an operational index.
-
-```sh
-cd backend && python -m pytest tests/test_vault.py tests/test_tasks.py -q
-cd ../frontend && bunx vitest run && bunx tsc --noEmit && bunx vite build
-```
-
-- Notes: `POST/GET/PUT/DELETE /api/v1/notes` (`?path=`), `POST /move`,
-  `GET /tree`, `GET /search?q=`, `GET /suggest?prefix=` (wikilink
-  autocomplete), `GET /broken`, `GET /versions`, `GET /versions/content`,
-  `POST /rollback` (lands as a new version), `POST /sync` (adopts external
-  edits, imports new files, reports missing, cleans crashed-write tmp files).
-  Optimistic concurrency via `expected_version`/`expected_hash` → `409
-  note_conflict` naming the current version; stable frontmatter `id` survives
-  renames; renames rewrite `[[links]]` in linking notes as new versions;
-  external on-disk edits are adopted as `external` versions on read/sync.
-- Tasks: `POST/GET/PATCH/DELETE /api/v1/tasks`, `POST /tasks/:id/transition`
-  (guarded state machine), note linking (`POST/DELETE /tasks/:id/notes`,
-  keyed by stable note id so renames don't break links), history,
-  idempotent recurrence (`POST /tasks/:id/occurrences/generate` —
-  `daily|weekly|monthly|weekdays|interval:N`, unique per series+day),
-  reminders (`POST /reminders`, `/snooze`, `/dismiss`, `POST
-  /reminders/evaluate` with snooze/dismiss/quiet-hours gating and
-  one-unread-per-task-per-day dedupe), notifications (`GET /notifications`,
-  `/unread-count`, `/read`, `/dismiss`).
-- AI execution: `POST /tasks/:id/execute` runs a REAL execution via
-  `services.executions.submit` (task + linked notes + memory as context) and
-  records an attempt; `POST /tasks/:id/verify` completes the task ONLY when
-  the execution terminally `completed` AND explicit criteria + evidence are
-  supplied — model text alone never completes a task.
-- Frontend (new files only): `NotesView.tsx` (tree + source/preview editor
-  with autosave/dirty indicator/word count + backlinks/outlinks/linked-tasks),
-  `TasksView.tsx` (Today/Overdue/Waiting/Inbox/Project filters, quick
-  complete, recurrence editor, reminder controls, Let-AI-do-this with
-  verify-to-complete), `Notifications.tsx` (badge, polling dropdown, deep
-  links), `notesApi.ts`, `taskLogic.ts` (+ vitest). See `HOOKS.md` for the
-  5-line `App.tsx` wiring snippet and the 3-line `agent.py` hooks
-  (`noteagent.build_task_context` / `inject_chat_reminder` /
-  `run_notetask_tool` — implemented, not yet wired in).
-
-## Verification
+## ✅ Verification
 
 ```sh
 cd backend && python -m pytest tests/ -q        # unit + concurrency
 cd ../frontend && bunx tsc --noEmit && bunx vite build
 ```
 
-See `docs/ARCHITECTURE.md` and `docs/FINAL_REPORT.md`.
+## 🗺️ Roadmap
+
+- [ ] Multi-worker backend rollout (seams already separated)
+- [ ] Swap-in pgvector for the memory store at scale
+- [ ] Richer approval policies + workspace resource limits
+- [ ] Plugin system for custom tools
+- [ ] Public demo + screenshots
+
+## 🔒 Security
+
+- No secrets are committed to this repo — API keys live in environment
+  variables or gitignored local files only. `.env.example` contains
+  placeholders.
+- Vault content, databases, logs, and workspace files are gitignored and
+  never leave the machine unless you configure it.
+- Destructive shell commands always require approval, even with auto-approve on.
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).

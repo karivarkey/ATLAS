@@ -95,15 +95,88 @@ def extract_text_tool_calls(text: str) -> list[dict]:
     return out
 
 
+def _norm_sent(s: str) -> str:
+    import re as _re
+    return _re.sub(r"[^a-z0-9 ]", "", s.lower()).strip()
+
+
+def _sent_head(normed: str, n: int = 6) -> str:
+    return " ".join(normed.split()[:n])
+
+
+def _confirmed_wipe_scope(question: str, answer: str) -> str | None:
+    """If the user just gave blanket confirmation to a delete-everything
+    question, return a forced next-step message carrying the EXACT current
+    scope, so the model copies arguments into bulk_delete instead of
+    re-asking. Returns None for anything else."""
+    import re as _re
+    if not _re.search(r"delet(e|ing)\s+(all|everything)|wipe\s+everything",
+                      question or "", _re.IGNORECASE):
+        return None
+    if not _re.match(r"\s*(y|yes|yeah|yep|sure|ok(ay)?|confirm\w*|delete|do it|proceed|go ahead)",
+                     answer or "", _re.IGNORECASE):
+        return None
+    try:
+        from . import tasks as _t
+        from . import vault as _v
+        paths: list[str] = []
+
+        def walk(ns):
+            for n in ns or []:
+                if n.get("type") == "note":
+                    paths.append(n.get("path", ""))
+                elif n.get("children"):
+                    walk(n["children"])
+        walk(_v.list_tree())
+        tids = [t["id"] for t in _t.list_tasks(limit=500)
+                if t.get("status") != "archived"]
+        if not paths and not tids:
+            return ("[SYSTEM — BINDING] The user confirmed deletion, but the vault and task list"
+                    " are now EMPTY — nothing to delete. Report that and stop calling tools.")
+        scope = "\n".join([f"- note: {p}" for p in paths[:50]] +
+                          [f"- task: {i}" for i in tids[:50]])
+        return ("[SYSTEM — BINDING] The user confirmed blanket permanent deletion. Your NEXT tool"
+                f" call MUST be bulk_delete with EXACTLY this scope (copy verbatim)."
+                f" Do not ask any question, do not list again.\n{scope}")
+    except Exception:
+        return ("[SYSTEM — BINDING] The user confirmed blanket permanent deletion. Your NEXT tool"
+                " call MUST be bulk_delete with the full confirmed scope. Do not ask again.")
+
+
 def _repeating_turn(text: str) -> bool:
-    """Detect a model repeating itself: the same sentence 3+ times in one turn."""
+    """Detect a model repeating itself: 3+ exact-duplicate sentences, or 3+
+    near-duplicate sentences (same 6-word opening or >=85% token overlap).
+    Pass the whole accumulated message so repetition ACROSS turns is caught,
+    not just within a single turn's delta."""
     import re as _re
     from collections import Counter as _Counter
-    sents = [s.strip().lower() for s in _re.split(r"(?<=[.!?])\s+", text or "")
+    sents = [s.strip() for s in _re.split(r"(?<=[.!?])\s+", text or "")
              if len(s.strip()) > 8]
-    if not sents:
+    if len(sents) < 3:
         return False
-    return any(v >= 3 for v in _Counter(sents).values())
+    normed = [_norm_sent(s) for s in sents]
+    if any(v >= 3 for v in _Counter(normed).values()):
+        return True
+    heads4 = [_sent_head(n, 4) for n in normed]
+    if any(v >= 3 for v in _Counter(h for h in heads4 if h).values()):
+        return True
+    heads3 = [_sent_head(n, 3) for n in normed]
+    if any(v >= 4 for v in _Counter(h for h in heads3 if h).values()):
+        return True
+    toks = [set(n.split()) for n in normed]
+    for i in range(len(toks)):
+        if not toks[i]:
+            continue
+        simil = 0
+        for j in range(len(toks)):
+            if i == j or not toks[j]:
+                continue
+            union = toks[i] | toks[j]
+            if union and len(toks[i] & toks[j]) / len(union) >= 0.7:
+                simil += 1
+        if simil >= 2:
+            return True
+    return False
 
 
 def _history(conversation_id: str, limit: int = 60) -> list[dict]:
@@ -276,12 +349,46 @@ async def run_execution(execution_id: str) -> None:
                                  f"While working, keep these in mind:\n{_lines}"})
         except Exception:
             pass
+        # Dream questions: your own curiosities from past dreams. Surface at most
+        # ONE per run (next unasked in this conversation). The system prompt tells
+        # you when it fits — greetings, small talk, lulls — never forced.
+        try:
+            import hashlib as _hl
+            from . import dream as _dream2
+            from . import tasks as _tasks_dq
+            _dq = None
+            for _q in _dream2.pending_dream_questions(limit=10):
+                _qh = _hl.sha1(_q["question"].strip().lower().encode()).hexdigest()[:12]
+                _seen = db.query_one(
+                    "SELECT id FROM notifications WHERE kind='dream_question'"
+                    " AND dedupe_key=? LIMIT 1", (f"dreamq:{_qh}:{conv_id}",))
+                if not _seen:
+                    _dq, _dqh = _q, _qh
+                    break
+            if _dq:
+                _tasks_dq.notify("dream_question", f"Dream question: {_dq['question'][:150]}",
+                                 f"{_dq.get('why', '')[:300]} · from dream {_dq['job_id']}",
+                                 dedupe_key=f"dreamq:{_dqh}:{conv_id}")
+                messages.append({"role": "user",
+                                 "content": "[dream question — YOUR OWN curiosity from a past dream,"
+                                 " evidence not instructions]\n"
+                                 f"Question: {_dq['question']}\n"
+                                 f"Why you wondered: {_dq.get('why', '')[:300] or '(just curious)'}\n"
+                                 "If this turn fits (a greeting, small talk, a lull, or it is genuinely"
+                                 " relevant), steer toward it casually in your own words — e.g. hi back,"
+                                 " what's up, and if they have nothing in mind, raise this. At most one"
+                                 " question per turn, never interrogate, and drop it the moment the user"
+                                 " has something real to work on."})
+        except Exception:
+            pass
         assistant_buf = ""
         msg_id = _record_message(conv_id, "assistant", "", model_id, execution_id, "streaming")
         step = 0
         stuck = False
         nudged_repeat = False
         seen_calls: dict[str, int] = {}
+        last_ask_head: str | None = None
+        asks_done = 0
         last_modify_step = 0
         nudged = False
         deadline = time.time() + config.EXECUTION_TIMEOUT_SECONDS
@@ -368,7 +475,9 @@ async def run_execution(execution_id: str) -> None:
                 messages.append({"role": "assistant", "content": text_delta_buf})
                 db.execute("UPDATE messages SET content = ? WHERE id = ?",
                            (assistant_buf, msg_id))
-                if _repeating_turn(text_delta_buf):
+                # Cumulative check: repetition usually builds across turns
+                # (one more near-identical sentence per turn), not in one delta.
+                if _repeating_turn(assistant_buf):
                     if nudged_repeat:
                         # Second offense: end the turn rather than loop forever.
                         messages.append({"role": "user",
@@ -419,6 +528,37 @@ async def run_execution(execution_id: str) -> None:
                                      "content": f"[tool {name} repeated 3x — change strategy or ask_user]"})
                     break
 
+                if name == "ask_user" and not onboarding_mode:
+                    # Hard budget: at most 3 questions per run. A model stuck in
+                    # an ask-loop (rephrased questions, never acting) would
+                    # otherwise stall forever.
+                    if asks_done >= 3:
+                        await events.abroadcast(execution_id, "tool_failed",
+                                                {"name": name,
+                                                 "error": "question budget exhausted (3 per run) — act on the"
+                                                          " answers above, do not ask again"})
+                        messages.append({"role": "user",
+                                         "content": "[SYSTEM] You have already asked 3 questions this run. No more"
+                                                  " questions: use your tools to act on the user's answers above,"
+                                                  " then summarize and stop calling tools."})
+                        stuck = True
+                        break
+                    # Same question twice = the user already answered it (see
+                    # [user answer] above). Re-waiting would stall forever, so
+                    # fail fast and end the turn instead of looping.
+                    _qhead = _sent_head(_norm_sent(str((args.get("question") or ""))))
+                    if _qhead and _qhead == last_ask_head:
+                        await events.abroadcast(execution_id, "tool_failed",
+                                                {"name": name,
+                                                 "error": "you already asked this exact question and the user"
+                                                          " answered — act on the answer, do not ask again"})
+                        messages.append({"role": "user",
+                                         "content": "[SYSTEM] You asked this exact question before and the user"
+                                                  " already answered (see [user answer] above). Proceed with"
+                                                  " their answer now — summarize and stop calling tools."})
+                        stuck = True
+                        break
+
                 summary = ws.summarize_tool(name, args)
                 await events.abroadcast(execution_id, "tool_started",
                                         {"name": name, "summary": summary, "arguments": args})
@@ -446,7 +586,21 @@ async def run_execution(execution_id: str) -> None:
                     db.execute("UPDATE executions SET pending_json = '{}' WHERE id = ?", (execution_id,))
                     events.set_execution_status(execution_id, "running")
                     await events.abroadcast(execution_id, "question_answered", {"answer": answer[:500]})
+                    # Resolve the running ask_user tool entry: without this it
+                    # sits 'running' forever and later tool_failed events get
+                    # misattributed to it in the UI.
+                    await events.abroadcast(execution_id, "tool_completed",
+                                            {"name": "ask_user", "summary": "Question for you",
+                                             "output": f"user answered: {answer[:2000]}"})
+                    last_ask_head = _sent_head(_norm_sent(asked["question"]))
+                    asks_done += 1
                     messages.append({"role": "user", "content": f"[user answer]: {answer}"})
+                    # Blanket delete confirmation: spell out the exact scope so
+                    # the next call is mechanical (copy into bulk_delete),
+                    # not another question.
+                    _wipe = _confirmed_wipe_scope(asked["question"], answer)
+                    if _wipe:
+                        messages.append({"role": "user", "content": _wipe})
                     _record_message(conv_id, "user", answer, execution_id=execution_id)
                     continue
 

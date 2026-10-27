@@ -158,18 +158,46 @@ def reject_proposal(pid: str, body: dict | None = None):
 
 @router.get("/jobs")
 def jobs(limit: int = 50):
+    import json as _json
+    dream._ensure_columns()
     rows = db.query("SELECT id, idempotency_key, status, trigger, model, stats_json, error,"
+                    " thinking, ideas_json, questions_json,"
                     " created_at, updated_at, ended_at FROM dream_jobs"
                     " ORDER BY created_at DESC LIMIT ?", (min(limit, 200),))
-    return {"jobs": [dict(r) for r in rows]}
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            _ideas = _json.loads(d.get("ideas_json") or "[]")
+        except Exception:
+            _ideas = []
+        try:
+            _questions = _json.loads(d.get("questions_json") or "[]")
+        except Exception:
+            _questions = []
+        d["ideas_count"] = len(_ideas)
+        d["questions_count"] = len(_questions)
+        d["thinking_preview"] = (d.get("thinking") or "")[:280]
+        out.append(d)
+    return {"jobs": out}
 
 
 @router.get("/jobs/{jid}")
 def job(jid: str):
+    dream._ensure_columns()
     r = db.query_one("SELECT * FROM dream_jobs WHERE id = ?", (jid,))
     if not r:
         raise HTTPException(404, "job not found")
     return dict(r)
+
+
+@router.get("/jobs/{jid}/detail")
+def job_detail(jid: str):
+    """Full dream card payload: thinking + ideas + questions + records + proposals."""
+    detail = dream.job_detail(jid)
+    if not detail:
+        raise HTTPException(404, "job not found")
+    return detail
 
 
 @router.post("/dream")

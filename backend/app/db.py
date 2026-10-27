@@ -355,6 +355,152 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status, created_at);
+
+-- ============ Jira integration (Cloud REST v3; Jira is source of truth) ============
+CREATE TABLE IF NOT EXISTS jira_connections (
+    id TEXT PRIMARY KEY,
+    scope_id TEXT NOT NULL DEFAULT 'user:default',
+    display_name TEXT NOT NULL DEFAULT '',
+    base_url TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    token_enc TEXT NOT NULL DEFAULT '',
+    project_keys TEXT NOT NULL DEFAULT '[]',
+    sync_prefs TEXT NOT NULL DEFAULT '{}',
+    ai_write INTEGER NOT NULL DEFAULT 1,
+    require_approval_deletes INTEGER NOT NULL DEFAULT 1,
+    notify_prefs TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'disconnected',
+    account_id TEXT NOT NULL DEFAULT '',
+    account_name TEXT NOT NULL DEFAULT '',
+    last_sync_at INTEGER NOT NULL DEFAULT 0,
+    last_sync_error TEXT NOT NULL DEFAULT '',
+    last_validated_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_conn_scope ON jira_connections(scope_id);
+
+CREATE TABLE IF NOT EXISTS jira_projects (
+    connection_id TEXT NOT NULL,
+    jira_id TEXT NOT NULL DEFAULT '',
+    key TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    project_type TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    lead TEXT NOT NULL DEFAULT '',
+    issue_count INTEGER NOT NULL DEFAULT -1,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (connection_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS jira_issues (
+    connection_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    remote_id TEXT NOT NULL DEFAULT '',
+    project_key TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    description_md TEXT NOT NULL DEFAULT '',
+    description_adf TEXT NOT NULL DEFAULT '{}',
+    issue_type TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    status_category TEXT NOT NULL DEFAULT '',
+    priority TEXT NOT NULL DEFAULT '',
+    assignee_id TEXT NOT NULL DEFAULT '',
+    assignee_name TEXT NOT NULL DEFAULT '',
+    reporter_name TEXT NOT NULL DEFAULT '',
+    labels TEXT NOT NULL DEFAULT '[]',
+    components TEXT NOT NULL DEFAULT '[]',
+    sprint TEXT NOT NULL DEFAULT '',
+    parent_key TEXT NOT NULL DEFAULT '',
+    epic_key TEXT NOT NULL DEFAULT '',
+    due_date TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    updated_remote TEXT NOT NULL DEFAULT '',
+    indexed_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (connection_id, issue_key)
+);
+CREATE INDEX IF NOT EXISTS idx_jira_issues_proj ON jira_issues(connection_id, project_key, status);
+CREATE VIRTUAL TABLE IF NOT EXISTS jira_issues_fts USING fts5(
+    issue_key, summary, description_md, project_key, status, assignee_name, labels);
+
+CREATE TABLE IF NOT EXISTS jira_attachments (
+    connection_id TEXT NOT NULL,
+    issue_key TEXT NOT NULL,
+    attachment_id TEXT NOT NULL,
+    filename TEXT NOT NULL DEFAULT '',
+    mime TEXT NOT NULL DEFAULT '',
+    size INTEGER NOT NULL DEFAULT 0,
+    author TEXT NOT NULL DEFAULT '',
+    created TEXT NOT NULL DEFAULT '',
+    content_url TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (connection_id, attachment_id)
+);
+
+CREATE TABLE IF NOT EXISTS jira_boards (
+    connection_id TEXT NOT NULL,
+    board_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    board_type TEXT NOT NULL DEFAULT '',
+    project_key TEXT NOT NULL DEFAULT '',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (connection_id, board_id)
+);
+
+CREATE TABLE IF NOT EXISTS jira_sprints (
+    connection_id TEXT NOT NULL,
+    sprint_id INTEGER NOT NULL,
+    board_id INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT '',
+    start_date TEXT NOT NULL DEFAULT '',
+    end_date TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (connection_id, sprint_id)
+);
+
+CREATE TABLE IF NOT EXISTS jira_saved_searches (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    scope_id TEXT NOT NULL DEFAULT 'user:default',
+    name TEXT NOT NULL DEFAULT '',
+    jql TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'local',
+    remote_id TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jira_sync_state (
+    connection_id TEXT PRIMARY KEY,
+    phase TEXT NOT NULL DEFAULT 'idle',
+    jql_cursor TEXT NOT NULL DEFAULT '',
+    next_token TEXT NOT NULL DEFAULT '',
+    processed INTEGER NOT NULL DEFAULT 0,
+    total_hint INTEGER NOT NULL DEFAULT 0,
+    updated_cursor TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS jira_ops (
+    id TEXT PRIMARY KEY,
+    connection_id TEXT NOT NULL,
+    scope_id TEXT NOT NULL DEFAULT 'user:default',
+    op TEXT NOT NULL,
+    issue_key TEXT NOT NULL DEFAULT '',
+    before_json TEXT NOT NULL DEFAULT '{}',
+    after_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'ok',
+    error TEXT NOT NULL DEFAULT '',
+    execution_id TEXT NOT NULL DEFAULT '',
+    conversation_id TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT 'user',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_ops_idem ON jira_ops(idempotency_key);
 """
 
 

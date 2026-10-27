@@ -90,18 +90,18 @@ export function PendingDock({
 
   if (status === 'waiting_approval') {
     return (
-      <div className="dock" data-testid="pending-dock-approval">
+      <div className="dock" data-testid="pending-dock-approval" role="alertdialog" aria-label="Approval required">
         <div className="dock-q">
-          <AlertTriangle size={14} /> Approval required: {commandSummary(pending)}
+          <AlertTriangle size={14} aria-hidden="true" /> Approval required: {commandSummary(pending)}
         </div>
-        {pending.reason && <div className="muted">{pending.reason}</div>}
-        {error && <div className="dock-error">{error}</div>}
+        {pending.reason && <div className="muted small">{pending.reason}</div>}
+        {error && <div className="dock-error" role="alert">{error}</div>}
         <div className="dock-row">
           <button className="btn primary sm" disabled={busy} onClick={() => decide(true)}>
-            <Check size={14} /> YES
+            <Check size={14} /> Approve
           </button>
           <button className="btn sm" disabled={busy} onClick={() => decide(false)}>
-            <X size={14} /> NO
+            <X size={14} /> Deny
           </button>
         </div>
       </div>
@@ -110,9 +110,9 @@ export function PendingDock({
 
   const view = describePending(status, pending)
   return (
-    <div className="dock" data-testid="pending-dock-question">
+    <div className="dock" data-testid="pending-dock-question" role="alertdialog" aria-label="Input needed">
       <div className="dock-q">
-        <AlertTriangle size={14} /> {view.question}
+        <AlertTriangle size={14} aria-hidden="true" /> {view.question}
       </div>
       {view.options.length > 0 && (
         <div className="dock-row">
@@ -123,9 +123,11 @@ export function PendingDock({
           ))}
         </div>
       )}
-      {error && <div className="dock-error">{error}</div>}
+      {error && <div className="dock-error" role="alert">{error}</div>}
       <div className="dock-row">
+        <label className="sr-only" htmlFor="pending-answer">Your answer</label>
         <input
+          id="pending-answer"
           placeholder="Type your answer… (free text always works)"
           value={text}
           disabled={busy}

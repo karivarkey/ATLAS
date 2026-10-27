@@ -21,23 +21,25 @@ const ICONS: Record<string, any> = {
 
 export function ToolCard({ tool }: { tool: ToolCall }) {
   const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
   const Icon = ICONS[tool.name] || Wrench
   const color =
     tool.status === 'done' ? 'var(--ok)' :
     tool.status === 'failed' ? 'var(--err)' :
     tool.status === 'approval' ? 'var(--warn)' : 'var(--accent)'
+  const stateLabel = tool.status === 'done' ? 'completed' : tool.status === 'failed' ? 'failed' : tool.status === 'approval' ? 'needs approval' : 'running'
   return (
     <div className={`toolcard ${tool.status}`}>
-      <button className="toolcard-head" onClick={() => setOpen((o) => !o)}>
+      <button className="toolcard-head" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-label={`${tool.name}, ${stateLabel}`}>
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <Icon size={14} style={{ color }} />
+        <Icon size={14} style={{ color }} aria-hidden="true" />
         <span className="toolcard-name">{tool.name}</span>
         <span className="toolcard-summary">{tool.summary}</span>
         <span className="toolcard-state">
-          {tool.status === 'running' && <Loader2 size={13} className="spin" />}
-          {tool.status === 'done' && <CheckCircle2 size={13} style={{ color: 'var(--ok)' }} />}
-          {tool.status === 'failed' && <XCircle size={13} style={{ color: 'var(--err)' }} />}
-          {tool.status === 'approval' && <CircleDashed size={13} style={{ color: 'var(--warn)' }} />}
+          {tool.status === 'running' && <Loader2 size={13} className="spin" aria-label="running" />}
+          {tool.status === 'done' && <CheckCircle2 size={13} style={{ color: 'var(--ok)' }} aria-label="done" />}
+          {tool.status === 'failed' && <XCircle size={13} style={{ color: 'var(--err)' }} aria-label="failed" />}
+          {tool.status === 'approval' && <CircleDashed size={13} style={{ color: 'var(--warn)' }} aria-label="approval" />}
         </span>
       </button>
       {open && (
@@ -48,7 +50,13 @@ export function ToolCard({ tool }: { tool: ToolCall }) {
           {tool.output && (
             <pre className="toolcard-output">{tool.output.slice(0, 6000)}</pre>
           )}
-          {!tool.output && !tool.diff && <div className="muted">Running…</div>}
+          {tool.output && (
+            <div><button className="mini-btn" onClick={() => {
+              navigator.clipboard.writeText(tool.output).catch(() => {})
+              setCopied(true); setTimeout(() => setCopied(false), 1200)
+            }}>{copied ? 'Copied' : 'Copy output'}</button></div>
+          )}
+          {!tool.output && !tool.diff && <div className="muted small">Running…</div>}
         </div>
       )}
     </div>

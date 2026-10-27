@@ -2,12 +2,40 @@ import React, { useState } from 'react'
 
 // Minimal streaming-safe markdown: code fences (partial ok), inline code,
 // bold, italic, links, headings, lists, tables. No raw HTML is ever injected.
-export function Markdown({ text }: { text: string }) {
-  const blocks = dedupe(splitBlocks(text))
+export function stripFrontmatter(text: string): string {
+  const t = (text || '').replace(/^\ufeff/, '')
+  // compact single-line: --- id: x ---  (legacy clients wrote these)
+  if (t.startsWith('---') && !t.startsWith('---\n') && !t.startsWith('---\r')) {
+    const nl = t.indexOf('\n')
+    const first = nl < 0 ? t : t.slice(0, nl)
+    let inner = first.trim().slice(3).trim()
+    if (inner.endsWith('---')) inner = inner.slice(0, -3).trim()
+    if (/^[A-Za-z0-9_-]+\s*:/.test(inner)) {
+      return nl < 0 ? '' : t.slice(nl + 1).replace(/^\n+/, '')
+    }
+    return t
+  }
+  if (!t.startsWith('---\n') && !t.startsWith('---\r')) return t
+  const lines = t.split('\n')
+  for (let i = 1; i < Math.min(lines.length, 60); i++) {
+    if (lines[i].trim() === '---' || lines[i].trim() === '...') {
+      // only treat as frontmatter if lines[1..i) look like key: value
+      const fmLines = lines.slice(1, i).filter((l) => l.trim() && !l.trim().startsWith('#'))
+      if (fmLines.length > 0 && fmLines.every((l) => /^\s*[A-Za-z0-9_-]+\s*:/.test(l))) {
+        return lines.slice(i + 1).join('\n').replace(/^\n+/, '')
+      }
+      break
+    }
+  }
+  return t
+}
+
+export function Markdown({ text, onOpenNote }: { text: string; onOpenNote?: (path: string) => void }) {
+  const blocks = dedupe(splitBlocks(stripFrontmatter(text)))
   return (
     <div className="md">
       {blocks.map((b, i) => (
-        <Block key={i} block={b} />
+        <Block key={i} block={b} onOpenNote={onOpenNote} />
       ))}
     </div>
   )
@@ -110,17 +138,17 @@ function cells(line: string): string[] {
   return line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
 }
 
-function Block({ block }: { block: Block }) {
+function Block({ block, onOpenNote }: { block: Block; onOpenNote?: (path: string) => void }) {
   if (block.kind === 'code') return <CodeBlock lang={block.lang} code={block.code} open={block.open} />
   if (block.kind === 'heading') {
     const Tag = `h${block.level}` as 'h1' | 'h2' | 'h3' | 'h4'
-    return <Tag className="md-h"><Inline text={block.text} /></Tag>
+    return <Tag className="md-h"><Inline text={block.text} onOpenNote={onOpenNote} /></Tag>
   }
   if (block.kind === 'list') {
     return (
       <ul className="md-ul">
         {block.items.map((it, i) => (
-          <li key={i}><Inline text={it} /></li>
+          <li key={i}><Inline text={it} onOpenNote={onOpenNote} /></li>
         ))}
       </ul>
     )
@@ -133,7 +161,7 @@ function Block({ block }: { block: Block }) {
             {block.rows.map((r, i) => (
               <tr key={i}>
                 {r.map((c, j) => (
-                  <td key={j}><Inline text={c} /></td>
+                  <td key={j}><Inline text={c} onOpenNote={onOpenNote} /></td>
                 ))}
               </tr>
             ))}
@@ -143,7 +171,7 @@ function Block({ block }: { block: Block }) {
     )
   }
   return (
-    <p className="md-p"><Inline text={block.text} /></p>
+    <p className="md-p"><Inline text={block.text} onOpenNote={onOpenNote} /></p>
   )
 }
 
@@ -155,13 +183,14 @@ function CodeBlock({ lang, code, open }: { lang: string; code: string; open: boo
         <span>{lang || 'code'}{open ? ' · streaming' : ''}</span>
         <button
           className="mini-btn"
+          aria-label={copied ? 'Copied' : `Copy ${lang || 'code'} to clipboard`}
           onClick={() => {
             navigator.clipboard.writeText(code).catch(() => {})
             setCopied(true)
             setTimeout(() => setCopied(false), 1200)
           }}
         >
-          {copied ? 'Copied' : 'Copy'}
+          {copied ? 'Copied ✓' : 'Copy'}
         </button>
       </div>
       <pre><code>{code}</code></pre>
@@ -170,16 +199,33 @@ function CodeBlock({ lang, code, open }: { lang: string; code: string; open: boo
 }
 
 // Inline formatting without dangerouslySetInnerHTML.
-export function Inline({ text }: { text: string }) {
+export function Inline({ text, onOpenNote }: { text: string; onOpenNote?: (path: string) => void }) {
   const parts: React.ReactNode[] = []
-  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g
+  const re = /(`[^`]+`|\[\[[^\]]+\]\]|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g
   let last = 0
   let m: RegExpExecArray | null
   let k = 0
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(<span key={k++}>{text.slice(last, m.index)}</span>)
     const tok = m[0]
-    if (tok.startsWith('`')) {
+    if (tok.startsWith('[[')) {
+      const inner = tok.slice(2, -2)
+      const aliasSplit = inner.split('|')
+      const target = aliasSplit[0].split('#')[0].trim()
+      const label = aliasSplit[1]?.trim() || aliasSplit[0].trim()
+      parts.push(
+        <button key={k++} className="md-wikilink" title={target}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (onOpenNote && target) {
+              const p = target.toLowerCase().endsWith('.md') ? target : `${target}.md`
+              onOpenNote(p)
+            }
+          }}>
+          {label}
+        </button>,
+      )
+    } else if (tok.startsWith('`')) {
       parts.push(<code key={k++} className="inline-code">{tok.slice(1, -1)}</code>)
     } else if (tok.startsWith('**')) {
       parts.push(<strong key={k++}>{tok.slice(2, -2)}</strong>)

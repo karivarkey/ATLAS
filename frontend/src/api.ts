@@ -174,6 +174,7 @@ export const api = {
       body: JSON.stringify({}),
     }),
   memoryJobs: () => req<{ jobs: any[] }>('/api/v1/memory/jobs'),
+  memoryJobDetail: (jid: string) => req<any>(`/api/v1/memory/jobs/${jid}/detail`),
   runDream: (conversation_ids: string[] = []) =>
     req<{ job_id: string; status: string }>(`/api/v1/memory/dream`, {
       method: 'POST',

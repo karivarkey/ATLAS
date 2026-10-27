@@ -163,6 +163,12 @@ export const useStore = create<Store>((set, get) => ({
     const model = conv?.model || localStorage.getItem('atlas.defaultModel') || get().models[0]?.id || ''
     if (!model) throw new Error('No model available — configure a model first.')
     const { execution_id } = await api.sendMessage(convId, content, model)
+    // Backend renames "New conversation" from the first query instantly;
+    // pull it so the sidebar never shows a stale title.
+    try {
+      const convFresh = await api.getConversation(convId)
+      set((s) => ({ conversations: s.conversations.map((c) => (c.id === convId ? convFresh : c)) }))
+    } catch { /* ignore — title arrives via title_updated event */ }
     const ex = await api.getExecution(execution_id)
     set((s) => ({
       chats: {
@@ -177,7 +183,14 @@ export const useStore = create<Store>((set, get) => ({
     }))
   },
 
-  applyEvent: (convId, ev) =>
+  applyEvent: (convId, ev) => {
+    const t0 = (ev as any)?.type as string
+    const p0 = ((ev as any)?.payload || {}) as Record<string, any>
+    if (t0 === 'title_updated' && p0.title) {
+      const cid = (p0.conversation_id as string) || convId
+      const title = String(p0.title).slice(0, 200)
+      set((s) => ({ conversations: s.conversations.map((c) => (c.id === cid ? { ...c, title } : c)) }))
+    }
     set((s) => {
       const chat = s.chats[convId] || emptyChat()
       const stream: StreamState = chat.stream || { text: '', tools: [], status: 'running', pending: {} }
@@ -216,7 +229,8 @@ export const useStore = create<Store>((set, get) => ({
       }
       return { chats: { ...s.chats, [convId]: { ...chat, stream: next,
         scrollKey: chat.scrollKey + (t === 'text_delta' ? 0 : 1) } } }
-    }),
+    })
+  },
 
   setExecution: (convId, ex) =>
     set((s) => ({ chats: { ...s.chats, [convId]: { ...(s.chats[convId] || emptyChat()), execution: ex } } })),

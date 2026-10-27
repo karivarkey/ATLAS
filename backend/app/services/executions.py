@@ -15,6 +15,9 @@ import logging
 from .. import config, db, events
 from . import agent
 
+import asyncio as _asyncio
+import re as _re
+
 log = logging.getLogger("atlas.exec")
 
 _semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_EXECUTIONS)
@@ -50,9 +53,11 @@ async def submit(conversation_id: str, user_text: str, model: str,
         _mem.ingest_message(conversation_id, msg_id, "user", user_text)
     except Exception:
         pass  # indexing must never break sending; reconciler covers gaps
-    if not conv["title"] or conv["title"] == "New conversation":
-        title = (user_text.strip().split("\n")[0])[:60] or "New conversation"
-        db.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id))
+    needs_title = (not conv["title"] or conv["title"] == "New conversation")
+    quick_title = _quick_title(user_text)
+    if needs_title:
+        db.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                   (quick_title, db.now_ms(), conversation_id))
 
     execution_id = db.new_id("exe")
     if not system_prompt:
@@ -77,9 +82,115 @@ async def submit(conversation_id: str, user_text: str, model: str,
     events.append(execution_id, "turn_queued",
                   {"conversation_id": conversation_id, "model": model})
 
+    if needs_title:
+        try:
+            _asyncio.get_running_loop().create_task(
+                _upgrade_title_ai(conversation_id, user_text, model, execution_id, quick_title))
+        except RuntimeError:
+            pass  # no loop (tests) — quick title already set
     async with _manager_lock:
         _tasks[execution_id] = asyncio.create_task(_supervised_run(execution_id, conversation_id))
     return {"execution_id": execution_id, "message_id": msg_id}
+
+
+_FILLER = _re.compile(
+    r"^(hey|hi+|hello|yo|sup|ok|okay|so|well|please|pls|thanks?|thank you|"
+    r"can you|could you|would you|will you|i want to|i wanna|i need( to)?|"
+    r"i\'m trying to|help( me)?( with| to)?|tell me|show me|give me|"
+    r"do you know|do u know)\b[\s,!.?]*",
+    _re.IGNORECASE,
+)
+
+
+def _quick_title(user_text: str) -> str:
+    """Instant heuristic title so the sidebar never sits on 'New conversation'."""
+    line = (user_text or "").strip().split("\n")[0].strip()
+    line = _re.sub(r"\s+", " ", line).strip(" \t-–—:;,.!?")
+    # Strip stacked greetings / filler openers ("hey, can you ...").
+    for _ in range(4):
+        nxt = _FILLER.sub("", line).strip(" \t-–—:;,.!?")
+        if nxt == line:
+            break
+        line = nxt
+    if not line:
+        return "New conversation"
+    # Word-boundary truncation around 55 chars.
+    if len(line) > 60:
+        cut = line[:60].rsplit(" ", 1)[0] or line[:60]
+        line = cut.strip(" \t-–—:;,.!?")
+    line = line[:60].strip()
+    if line:
+        line = line[0].upper() + line[1:]
+    return line or "New conversation"
+
+
+def _clean_ai_title(raw: str) -> str:
+    s = (raw or "").strip().strip("\"'“”‘’`").strip()
+    s = _re.sub(r"\s+", " ", s).strip(" \t-–—:;,.!?")
+    # Model sometimes returns a full sentence — keep it title-short.
+    words = s.split()
+    if len(words) > 8:
+        s = " ".join(words[:8])
+    if len(s) > 60:
+        s = s[:60].rsplit(" ", 1)[0] or s[:60]
+        s = s.strip(" \t-–—:;,.!?")
+    if len(s) < 2 or len(s.split()) < 2 and len(s) < 8:
+        return ""
+    if s:
+        s = s[0].upper() + s[1:]
+    return s[:60]
+
+
+async def _upgrade_title_ai(conversation_id: str, user_text: str, model_id: str,
+                            execution_id: str, fallback: str) -> None:
+    """Best-effort LLM title: summarize the first query, then broadcast."""
+    try:
+        from . import model_catalog as _cat
+        from . import providers as _prov
+        ok, model = await _cat.validate_model(model_id)
+        if not ok:
+            cat = await _cat.get_catalog()
+            if not cat.get("models"):
+                return
+            model = cat["models"][0]
+        prompt = (
+            "Generate a short conversation title (3-6 words, max 50 characters, "
+            "no quotes, no trailing period, Title Case) that summarizes this user "
+            "message. Return ONLY the title, nothing else.\n\nUser message: "
+            + (user_text or "")[:500]
+        )
+        chunks: list[str] = []
+        async def _collect():
+            async for ev in _prov.complete(
+                    model, [{"role": "user", "content": prompt}],
+                    session_id=conversation_id):
+                if ev.get("text"):
+                    chunks.append(ev["text"])
+                    if sum(len(c) for c in chunks) > 120:
+                        break
+        try:
+            await _asyncio.wait_for(_collect(), timeout=20)
+        except (_asyncio.TimeoutError, Exception):
+            pass
+        title = _clean_ai_title("".join(chunks))
+        if not title or title.lower() == "new conversation":
+            return
+        row = db.query_one("SELECT title FROM conversations WHERE id = ?", (conversation_id,))
+        cur = (row["title"] if row else "") or ""
+        # Only upgrade the auto title — never clobber a user rename.
+        if cur and cur != "New conversation" and cur != fallback:
+            return
+        if cur == title:
+            return
+        db.execute("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                   (title, db.now_ms(), conversation_id))
+        try:
+            await events.abroadcast(execution_id, "title_updated",
+                                    {"conversation_id": conversation_id, "title": title})
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 async def _supervised_run(execution_id: str, conversation_id: str) -> None:

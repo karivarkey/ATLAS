@@ -1,13 +1,15 @@
 import {
   AlertTriangle, Brain, Check, CheckSquare, ChevronDown, CircleStop, FileDiff, FileText,
-  Loader2, MessageSquarePlus, Mic, Pause, Play, RotateCcw, Send, Settings as SettingsIcon,
-  PanelRight, Search, SquarePen, Trash2, Wrench, X,
+  Loader2, MessageSquarePlus, Mic, Moon, Pause, PanelLeftClose, PanelLeftOpen, Play, Plus,
+  RotateCcw, Send, Settings as SettingsIcon, PanelRight, Search, SquarePen, Sun, Trash2,
+  Wrench, X, Ticket,
 } from 'lucide-react'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { api, ChatMessage } from './api'
 import { Markdown } from './markdown'
 import { MemoryFilePanel } from './MemoryFiles'
 import { MemoryView } from './MemoryView'
+import { JiraView } from './JiraView'
 import { NotesView } from './NotesView'
 import { Notifications } from './Notifications'
 import { OnboardingWizard } from './OnboardingWizard'
@@ -16,9 +18,10 @@ import { PendingDock } from './PendingDock'
 import { useStore } from './store'
 import { ToolCard } from './ToolCard'
 import { useExecutionStream } from './useStream'
+import { EmptyState as DS_EmptyState, useConfirm, useTheme, useToast } from './ui'
 
 export default function App() {
-  const [view, setView] = useState<'chat' | 'memory' | 'notes' | 'tasks'>('chat')
+  const [view, setView] = useState<'chat' | 'memory' | 'notes' | 'tasks' | 'jira'>('chat')
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [taskSel, setTaskSel] = useState<string | null>(null)
   const [noteSel, setNoteSel] = useState<string | null>(null)
@@ -29,6 +32,8 @@ export default function App() {
   const selectConversation = useStore((s) => s.selectConversation)
   const keyConfigured = useStore((s) => s.keyConfigured)
   const settingsOpen = useStore((s) => s.settingsOpen)
+
+  useTheme() // applies data-theme + persists; toggle lives in sidebar/header
 
   useEffect(() => {
     loadConversations()
@@ -46,16 +51,20 @@ export default function App() {
         onMemory={() => setView('memory')}
         onNotes={() => setView('notes')}
         onTasks={() => setView('tasks')}
+        onJira={() => setView('jira')}
         onBellTask={(id) => { setTaskSel(id); setView('tasks') }}
         onBellNote={(path) => { setNoteSel(path); setView('notes') }}
         inChat={view === 'chat'}
         inMemory={view === 'memory'}
         inNotes={view === 'notes'}
         inTasks={view === 'tasks'}
+        inJira={view === 'jira'}
       />
       <main className="main">
         {view === 'memory' ? (
           <MemoryView onClose={() => setView('chat')} />
+        ) : view === 'jira' ? (
+          <JiraView />
         ) : view === 'notes' ? (
           <NotesView
             initialPath={noteSel}
@@ -88,16 +97,18 @@ export default function App() {
 
 function EmptyState() {
   const createConversation = useStore((s) => s.createConversation)
+  const toast = useToast()
   return (
-    <div className="empty">
-      <div className="empty-card">
-        <h1>Atlas</h1>
-        <p>An agentic coding environment. Start a conversation, pick a model, and give it a task.</p>
-        <button className="btn primary" onClick={() => createConversation()}>
-          <MessageSquarePlus size={16} /> New conversation
+    <DS_EmptyState
+      icon={<MessageSquarePlus size={18} />}
+      title="Start a conversation"
+      body="Atlas is an agentic coding environment. Pick a model, describe the task, and review each step."
+      action={
+        <button className="btn primary" onClick={() => createConversation().catch((e) => toast.push({ kind: 'error', title: 'Could not create conversation', desc: String(e.message || e).slice(0, 200) }))}>
+          <Plus size={15} /> New conversation
         </button>
-      </div>
-    </div>
+      }
+    />
   )
 }
 
@@ -114,10 +125,10 @@ function KeyBanner() {
 
 /* ---------------- Sidebar ---------------- */
 
-function Sidebar({ onChat, onMemory, onNotes, onTasks, onBellTask, onBellNote, inChat, inMemory, inNotes, inTasks }: {
-  onChat: () => void; onMemory: () => void; onNotes: () => void; onTasks: () => void;
+function Sidebar({ onChat, onMemory, onNotes, onTasks, onJira, onBellTask, onBellNote, inChat, inMemory, inNotes, inTasks, inJira }: {
+  onChat: () => void; onMemory: () => void; onNotes: () => void; onTasks: () => void; onJira: () => void;
   onBellTask: (id: string) => void; onBellNote: (path: string) => void;
-  inChat: boolean; inMemory: boolean; inNotes: boolean; inTasks: boolean;
+  inChat: boolean; inMemory: boolean; inNotes: boolean; inTasks: boolean; inJira: boolean;
 }) {
   const conversations = useStore((s) => s.conversations)
   const activeId = useStore((s) => s.activeId)
@@ -129,6 +140,8 @@ function Sidebar({ onChat, onMemory, onNotes, onTasks, onBellTask, onBellNote, i
   const sidebarOpen = useStore((s) => s.sidebarOpen)
   const setSidebar = useStore((s) => s.setSidebar)
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
+  const { theme, toggle } = useTheme()
+  const { ask, dialog } = useConfirm()
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -153,48 +166,64 @@ function Sidebar({ onChat, onMemory, onNotes, onTasks, onBellTask, onBellNote, i
 
   if (!sidebarOpen) {
     return (
-      <button className="rail-btn" onClick={() => setSidebar(true)} title="Open sidebar">☰</button>
+      <button className="rail-btn" onClick={() => setSidebar(true)} title="Open sidebar" aria-label="Open sidebar">
+        <PanelLeftOpen size={16} />
+      </button>
     )
   }
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" aria-label="Workspace navigation">
       <div className="brand">
-        <span className="brand-mark">A</span>
+        <span className="brand-mark" aria-hidden="true">A</span>
         <span className="brand-name">Atlas</span>
-        <button className="icon-btn" onClick={() => setSidebar(false)} title="Close sidebar">☰</button>
+        <button className="icon-btn" onClick={() => setSidebar(false)} title="Close sidebar" aria-label="Close sidebar">
+          <PanelLeftClose size={16} />
+        </button>
       </div>
-      <div className="navgrid">
+      <nav className="navgrid" aria-label="Primary">
         <button className={`btn navcell ${inChat ? 'active' : ''}`}
-          title="New chat (Ctrl+Shift+O)"
+          title="New chat (Ctrl+Shift+O)" aria-current={inChat ? 'page' : undefined}
           onClick={() => { createConversation().then(() => onChat()) }}>
-          <SquarePen size={16} /> New chat
+          <SquarePen size={15} /> New chat
         </button>
-        <button className={`btn navcell ${inMemory ? 'active' : ''}`} onClick={onMemory}>
-          <Brain size={16} /> Memory
+        <button className={`btn navcell ${inMemory ? 'active' : ''}`} onClick={onMemory} aria-current={inMemory ? 'page' : undefined}>
+          <Brain size={15} /> Memory
         </button>
-        <button className={`btn navcell ${inNotes ? 'active' : ''}`} onClick={onNotes}>
-          <FileText size={16} /> Notes
+        <button className={`btn navcell ${inNotes ? 'active' : ''}`} onClick={onNotes} aria-current={inNotes ? 'page' : undefined}>
+          <FileText size={15} /> Notes
         </button>
-        <button className={`btn navcell ${inTasks ? 'active' : ''}`} onClick={onTasks}>
-          <CheckSquare size={16} /> Tasks
+        <button className={`btn navcell ${inTasks ? 'active' : ''}`} onClick={onTasks} aria-current={inTasks ? 'page' : undefined}>
+          <CheckSquare size={15} /> Tasks
         </button>
-      </div>
+        <button className={`btn navcell ${inJira ? 'active' : ''}`} onClick={onJira} title="Jira (Ctrl+Shift+J)" aria-current={inJira ? 'page' : undefined}>
+          <Ticket size={15} /> Jira
+        </button>
+      </nav>
       <div className="searchbox">
-        <Search size={14} />
+        <Search size={14} aria-hidden="true" />
         <input
           id="conv-search"
-          placeholder="Search conversations  (Ctrl+K)"
+          placeholder="Search conversations"
+          aria-label="Search conversations"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <kbd title="Ctrl+K">⌃K</kbd>
       </div>
-      <div className="convlist">
+      <div className="sidebar-sec" id="conv-sec">Conversations</div>
+      <div className="convlist" role="listbox" aria-labelledby="conv-sec">
         {filtered.map((c) => (
           <div
             key={c.id}
+            role="option"
+            aria-selected={c.id === activeId}
+            tabIndex={0}
             className={`conv ${c.id === activeId ? 'active' : ''}`}
             onClick={() => { selectConversation(c.id); onChat() }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectConversation(c.id); onChat() }
+            }}
           >
             <div className="conv-title">{c.title || 'New conversation'}</div>
             <div className="conv-meta">
@@ -207,24 +236,29 @@ function Sidebar({ onChat, onMemory, onNotes, onTasks, onBellTask, onBellNote, i
             </div>
             <button
               className="icon-btn danger"
-              title="Delete"
-              onClick={(e) => {
+              title="Delete conversation"
+              aria-label={`Delete ${c.title || 'conversation'}`}
+              onClick={async (e) => {
                 e.stopPropagation()
-                if (confirm('Delete this conversation?')) deleteConversation(c.id)
+                if (await ask('Delete this conversation?', `"${(c.title || 'New conversation').slice(0, 80)}" will be removed permanently.`, true)) deleteConversation(c.id)
               }}
             >
               <Trash2 size={13} />
             </button>
           </div>
         ))}
-        {filtered.length === 0 && <div className="muted pad">No conversations.</div>}
+        {filtered.length === 0 && <div className="muted pad small">No conversations match.</div>}
       </div>
       <div className="sidebar-foot">
         <Notifications onOpenTask={onBellTask} onOpenNote={onBellNote} />
+        <button className="icon-btn" onClick={toggle} title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'} aria-label="Toggle theme">
+          {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
         <button className="btn ghost" onClick={() => setSettingsOpen(true)}>
           <SettingsIcon size={15} /> Settings
         </button>
       </div>
+      {dialog}
     </aside>
   )
 }
@@ -246,17 +280,39 @@ function ChatView({ convId }: { convId: string }) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const sendMessage = useStore((s) => s.sendMessage)
+  const toast = useToast()
   const listRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
 
   const messages = chat?.messages || []
   const stream = chat?.stream || null
 
+  // The execution snapshot taken at send-time goes stale (step count,
+  // status) — without refreshes the header reads "running · step 0" forever
+  // and a missed terminal SSE frame looks like a freeze. Poll while active.
+  useEffect(() => {
+    if (!executionId) return
+    if (stream && ['turn_completed', 'turn_failed', 'cancelled'].includes(stream.status)) return
+    const t = window.setInterval(async () => {
+      try {
+        const snap = await api.getExecution(executionId)
+        if (['completed', 'failed', 'cancelled', 'timed_out', 'interrupted'].includes(snap.status)) {
+          useStore.setState((s) => ({
+            chats: { ...s.chats, [convId]: { ...(s.chats[convId]!), execution: null } },
+          }))
+        } else {
+          useStore.getState().setExecution(convId, snap)
+        }
+      } catch { /* transient — next tick retries */ }
+    }, 3000)
+    return () => window.clearInterval(t)
+  }, [convId, executionId, stream?.status])
+
   useEffect(() => {
     if (stickRef.current && listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight
     }
-  }, [messages.length, stream?.text, stream?.tools.length, stream?.status])
+  }, [messages.length, stream?.text, stream?.tools.length, stream?.status, sending])
 
   const onScroll = () => {
     const el = listRef.current
@@ -290,7 +346,8 @@ function ChatView({ convId }: { convId: string }) {
         chats: { ...s.chats, [convId]: { ...s.chats[convId]!, messages } },
       }))
     } catch (e: any) {
-      alert(`Could not send: ${e.message}`)
+      setDraft(text) // restore — never discard user input on failure
+      toast.push({ kind: 'error', title: 'Could not send', desc: String(e.message || e).slice(0, 220) })
     } finally {
       setSending(false)
     }
@@ -303,10 +360,25 @@ function ChatView({ convId }: { convId: string }) {
   return (
     <div className="chat">
       <Header convId={convId} running={running} />
-      <div className="msglist" ref={listRef} onScroll={onScroll}>
+      <div className="msglist" ref={listRef} onScroll={onScroll} role="log" aria-live="off" aria-label="Conversation messages">
         {messages.map((m) => (
           <MessageRow key={m.id} msg={m} />
         ))}
+        {/* First-token suspense: stream exists but is empty (queued/starting/thinking),
+            or the send POST itself is still in flight. Without this the chat sits
+            dead-still between send and the first token/tool event. */}
+        {(sending || (stream && !['turn_completed', 'turn_failed', 'cancelled'].includes(stream.status))) &&
+          !stream?.text && (
+          <div className="msg assistant">
+            <div className="avatar">A</div>
+            <div className="bubble thinking-bubble">
+              <span className="thinking" aria-hidden="true"><span /><span /><span /></span>
+              <span className="muted small">
+                {sending ? 'Sending…' : stream?.status === 'queued' ? 'Queued…' : 'Thinking…'}
+              </span>
+            </div>
+          </div>
+        )}
         {stream && stream.text && (
           <div className="msg assistant streaming">
             <div className="avatar">A</div>
@@ -436,8 +508,9 @@ function Activity({ convId, executionId }: { convId: string; executionId: string
 }
 
 function RetryButton({ executionId }: { executionId: string | null }) {  if (!executionId) return null
+  const toast = useToast()
   return (
-    <button className="btn sm" onClick={() => api.retry(executionId).catch((e) => alert(e.message))}>
+    <button className="btn sm" onClick={() => api.retry(executionId).catch((e) => toast.push({ kind: 'error', title: 'Retry failed', desc: String(e.message || e).slice(0, 200) }))}>
       <RotateCcw size={13} /> Retry
     </button>
   )
@@ -459,6 +532,20 @@ function Header({ convId, running }: { convId: string; running: boolean }) {
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState('')
+  const pickerRef = useRef<HTMLDivElement>(null)
+  const toast = useToast()
+  const { ask, dialog } = useConfirm()
+
+  useEffect(() => {
+    if (!pickerOpen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPickerOpen(false) }
+    const onClick = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setPickerOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('mousedown', onClick)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('mousedown', onClick) }
+  }, [pickerOpen])
 
   const filtered = useMemo(() => {
     const needle = q.toLowerCase()
@@ -478,7 +565,7 @@ function Header({ convId, running }: { convId: string; running: boolean }) {
   }, [filtered])
 
   const stop = async () => {
-    if (execution) await api.stop(execution.id).catch((e) => alert(e.message))
+    if (execution) await api.stop(execution.id).catch((e) => toast.push({ kind: 'error', title: 'Stop failed', desc: String(e.message || e).slice(0, 200) }))
   }
 
   return (
@@ -502,15 +589,16 @@ function Header({ convId, running }: { convId: string; running: boolean }) {
         )}
       </div>
       <div className="chead-actions">
-        <div className="modelpicker">
-          <button className="btn model-btn" onClick={() => { setPickerOpen((o) => !o); loadModels() }}>
-            {shortModel(conv?.model || '')} <ChevronDown size={13} />
+        <div className="modelpicker" ref={pickerRef}>
+          <button className="btn model-btn" aria-haspopup="listbox" aria-expanded={pickerOpen} onClick={() => { setPickerOpen((o) => !o); loadModels() }}>
+            <span>{shortModel(conv?.model || '')}</span> <ChevronDown size={13} />
           </button>
           {pickerOpen && (
-            <div className="picker-pop">
+            <div className="picker-pop" role="listbox" aria-label="Select model">
               <input
                 autoFocus
                 placeholder="Search models…"
+                aria-label="Search models"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
               />
@@ -521,10 +609,12 @@ function Header({ convId, running }: { convId: string; running: boolean }) {
                     {ms.map((m) => (
                       <button
                         key={m.id}
+                        role="option"
+                        aria-selected={conv?.model === m.id}
                         className={`picker-item ${conv?.model === m.id ? 'sel' : ''}`}
-                        onClick={() => {
+                        onClick={async () => {
                           if (running) {
-                            if (!confirm('A response is running with the current model. Switch for the next turn?')) return
+                            if (!await ask('Switch model mid-run?', 'The running response keeps the current model; the new model applies to the next turn.')) return
                           }
                           setModel(convId, m.id)
                           setPickerOpen(false)
@@ -555,17 +645,18 @@ function Header({ convId, running }: { convId: string; running: boolean }) {
             {execution.status === 'paused' ? (
               <button className="btn sm" onClick={() => api.resume(execution.id)}><Play size={13} /> Resume</button>
             ) : (
-              <button className="btn sm" onClick={() => api.pause(execution.id).catch((e) => alert(e.message))}>
+              <button className="btn sm" onClick={() => api.pause(execution.id).catch((e) => toast.push({ kind: 'error', title: 'Pause failed', desc: String(e.message || e).slice(0, 200) }))}>
                 <Pause size={13} /> Pause
               </button>
             )}
             <button className="btn sm danger" onClick={stop}><CircleStop size={13} /> Stop</button>
           </>
         )}
-        <button className="icon-btn" onClick={() => setDetailOpen(!detailOpen)} title="Execution details">
+        <button className="icon-btn" onClick={() => setDetailOpen(!detailOpen)} title="Execution details" aria-label="Toggle execution details" aria-expanded={detailOpen}>
           <PanelRight size={16} />
         </button>
       </div>
+      {dialog}
       {detailOpen && <DetailDrawer convId={convId} />}
     </header>
   )
@@ -596,7 +687,7 @@ function DetailDrawer({ convId }: { convId: string }) {
   };
 
   return (
-    <div className="drawer">
+    <div className="drawer" role="complementary" aria-label="Execution details">
       <h4>Execution</h4>
       <div className="kv"><span>Status</span><b>{execution?.status || stream?.status || 'idle'}</b></div>
       <div className="kv"><span>Model</span><b>{execution?.model || '—'}</b></div>
@@ -702,10 +793,13 @@ function Composer({ convId, draft, setDraft, send, sending, running, executionId
   return (
     <div className="composer">
       <div className="composer-box">
+        <label className="sr-only" htmlFor="composer-input">Message Atlas</label>
         <textarea
+          id="composer-input"
           ref={taRef}
           rows={1}
-          placeholder={running ? 'Working… type only to add context after it finishes' : `Message Atlas · ${shortModel(conv?.model || '')} (Enter to send, Shift+Enter newline)`}
+          aria-label="Message Atlas"
+          placeholder={running ? 'Working… you can queue context, it sends after this run' : `Message Atlas · ${shortModel(conv?.model || '')}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -718,10 +812,12 @@ function Composer({ convId, draft, setDraft, send, sending, running, executionId
         <div className="composer-row">
           <span className="muted small">Enter ↵ send · Shift+Enter newline · Ctrl+/ focus</span>
           <span className="composer-actions">
-            {voiceError && <span className="voice-error">{voiceError}</span>}
+            {voiceError && <span className="voice-error" role="alert">{voiceError}</span>}
             <button
               className={`icon-btn mic ${recording ? 'rec' : ''}`}
               title={recording ? 'Stop recording' : 'Voice input'}
+              aria-label={recording ? 'Stop voice recording' : 'Start voice input'}
+              aria-pressed={recording}
               onClick={toggleRecording}
               disabled={transcribing}
             >
@@ -733,8 +829,8 @@ function Composer({ convId, draft, setDraft, send, sending, running, executionId
               <CircleStop size={14} /> Stop
             </button>
           ) : (
-            <button className="btn primary sm" disabled={!draft.trim() || sending} onClick={send}>
-              {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send
+            <button className="btn primary sm" disabled={!draft.trim() || sending} onClick={send} aria-label="Send message">
+              {sending ? <Loader2 size={14} className="spin" /> : <Send size={14} />} {sending ? 'Sending' : 'Send'}
             </button>
           )}
           </span>
@@ -774,11 +870,13 @@ function SettingsModal({ onReonboard }: { onReonboard: () => void }) {
     <div className="modal-back" onClick={() => setSettingsOpen(false)}>
       <div
         className={`modal settings-modal ${stab === 'general' ? '' : 'wide'}`}
+        role="dialog" aria-modal="true" aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => { if (e.key === 'Escape') setSettingsOpen(false) }}
       >
         <div className="modal-head">
           <h3>Settings</h3>
-          <button className="icon-btn" onClick={() => setSettingsOpen(false)}><X size={15} /></button>
+          <button className="icon-btn" aria-label="Close settings" onClick={() => setSettingsOpen(false)}><X size={15} /></button>
         </div>
         <div className="mem-tabs settings-tabs">
           {([['general', 'General'], ['soul', 'SOUL.md'], ['user', 'USER.md']] as const).map(

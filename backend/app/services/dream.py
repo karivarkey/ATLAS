@@ -1,9 +1,9 @@
-"""Dream Engine: scheduled + event-triggered consolidation.
+"""Dream Engine: autonomous offline consolidation (human-like dreaming). [REVAMPED]
 
 queued → collecting → analyzing → proposing → validating → applying → completed
 (+ failed / cancelled / approval_required). Idempotent via idempotency keys.
-Low-risk facts auto-apply; SOUL.md changes always require approval; USER.md
-updates auto-apply within conciseness caps.
+Direct-write: facts go active, USER.md auto-updates, SOUL.md appends directly.
+No confirmations — a dream files everything and completes.
 """
 from __future__ import annotations
 
@@ -23,6 +23,17 @@ TYPES = {"preference", "project_fact", "decision", "constraint", "episode",
          "outcome", "lesson", "question", "rule_proposal"}
 
 
+def _ensure_columns() -> None:
+    """Idempotent migrations for dream segregation (old DB files)."""
+    try:
+        db.ensure_column("dream_jobs", "thinking", "TEXT NOT NULL DEFAULT ''")
+        db.ensure_column("dream_jobs", "ideas_json", "TEXT NOT NULL DEFAULT '[]'")
+        db.ensure_column("dream_jobs", "questions_json", "TEXT NOT NULL DEFAULT '[]'")
+        db.ensure_column("memory_records", "dream_job_id", "TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass
+
+
 def _job(job_id: str) -> dict | None:
     r = db.query_one("SELECT * FROM dream_jobs WHERE id = ?", (job_id,))
     return dict(r) if r else None
@@ -38,6 +49,7 @@ def _set_status(job_id: str, status: str, **kw) -> None:
 
 def trigger(trigger: str = "manual", conversation_ids: list[str] | None = None,
             idempotency_key: str | None = None, model: str = "") -> dict:
+    _ensure_columns()
     if idempotency_key:
         existing = db.query_one("SELECT * FROM dream_jobs WHERE idempotency_key = ?",
                                 (idempotency_key,))
@@ -63,6 +75,69 @@ def trigger(trigger: str = "manual", conversation_ids: list[str] | None = None,
 def get_record(record_id: str, scope: str) -> dict | None:
     r = db.query_one("SELECT * FROM memory_records WHERE id = ? AND scope_id = ?", (record_id, scope))
     return dict(r) if r else None
+
+
+def job_detail(job_id: str) -> dict | None:
+    """Full dream card payload: job + thinking + ideas/questions + effects."""
+    _ensure_columns()
+    job = _job(job_id)
+    if not job:
+        return None
+    try:
+        proposals = [dict(r) for r in db.query(
+            "SELECT * FROM memory_proposals WHERE job_id = ? ORDER BY created_at ASC LIMIT 100",
+            (job_id,))]
+    except Exception:
+        proposals = []
+    try:
+        records = [dict(r) for r in db.query(
+            "SELECT * FROM memory_records WHERE dream_job_id = ? ORDER BY created_at ASC LIMIT 100",
+            (job_id,))]
+    except Exception:
+        records = []
+    try:
+        import json as _j
+        ideas = _j.loads(job.get("ideas_json") or "[]")
+        questions = _j.loads(job.get("questions_json") or "[]")
+    except Exception:
+        ideas, questions = [], []
+    return {"job": job, "thinking": job.get("thinking") or "",
+            "ideas": ideas, "questions": questions,
+            "proposals": proposals, "records": records}
+
+
+def pending_dream_questions(limit: int = 10) -> list[dict]:
+    """Open questions from recent completed dreams, newest dream first.
+
+    These are the AI's own curiosities — the agent may steer a lull/small-talk
+    moment toward one, like a human would. Rotation/dedupe is handled by the
+    caller via notifications (one ask per question per conversation)."""
+    _ensure_columns()
+    try:
+        jobs = db.query("SELECT id, questions_json, created_at FROM dream_jobs"
+                        " WHERE status='completed' AND questions_json NOT IN ('', '[]')"
+                        " ORDER BY created_at DESC LIMIT 10")
+    except Exception:
+        return []
+    out: list[dict] = []
+    for j in jobs:
+        try:
+            import json as _j
+            qs = _j.loads(j["questions_json"] or "[]")
+        except Exception:
+            continue
+        for q in qs if isinstance(qs, list) else []:
+            if not isinstance(q, dict):
+                continue
+            text = str(q.get("question", "")).strip()
+            if len(text) < 8:
+                continue
+            out.append({"question": text[:300], "why": str(q.get("why", ""))[:300],
+                        "confidence": float(q.get("confidence", 0.5) or 0.5),
+                        "job_id": j["id"], "dreamed_at": j["created_at"]})
+            if len(out) >= max(1, limit):
+                return out
+    return out
 
 
 def list_records(scope: str, status: str = "", limit: int = 100) -> list[dict]:
@@ -94,10 +169,25 @@ async def _run(job_id: str) -> None:
         db.execute("UPDATE dream_jobs SET watermark_to = ?, conversation_ids = ? WHERE id = ?",
                    (max_ts, json.dumps(sorted({m['conversation_id'] for m in msgs})), job_id))
         if not msgs:
+            try:
+                db.execute("UPDATE dream_jobs SET thinking = ?, updated_at = ? WHERE id = ?",
+                           ("Nothing new since the last dream — every message was already"
+                            " consolidated. All caught up.", db.now_ms(), job_id))
+            except Exception:
+                pass
             _finish(job_id, "completed", {"messages": 0, "note": "nothing new"})
             return
         _set_status(job_id, "analyzing")
         proposal = await _analyze(job, msgs)
+        try:
+            db.execute("UPDATE dream_jobs SET thinking = ?, ideas_json = ?, questions_json = ?,"
+                       " updated_at = ? WHERE id = ?",
+                       (str(proposal.get("thinking", ""))[:12000],
+                        json.dumps(proposal.get("ideas", [])[:20])[:20000],
+                        json.dumps(proposal.get("questions", [])[:20])[:20000],
+                        db.now_ms(), job_id))
+        except Exception:
+            pass
         _set_status(job_id, "proposing")
         n_proposed = _store_proposals(job_id, proposal)
         _set_status(job_id, "validating")
@@ -106,7 +196,10 @@ async def _run(job_id: str) -> None:
         _finish(job_id, "completed", {"messages": len(msgs), "proposed": n_proposed,
                                       "applied_records": applied["records"],
                                       "user_md_version": applied.get("user_version"),
-                                      "soul_proposals": applied["soul_proposals"]})
+                                      "soul_proposals": applied["soul_proposals"],
+                                      "ideas": len(proposal.get("ideas", []) or []),
+                                      "questions": len(proposal.get("questions", []) or []),
+                                      "thinking_chars": len(str(proposal.get("thinking", "")))})
     except asyncio.CancelledError:
         _set_status(job_id, "cancelled", error="cancelled")
     except Exception as exc:
@@ -159,13 +252,22 @@ async def _analyze(job: dict, msgs: list[dict]) -> dict:
     existing = list_records(mem.scope_of(msgs[0]["conversation_id"]), status="active", limit=50)
     exist_txt = "\n".join(f"- {r['subject']} | {r['predicate']} | {r['object_value']}"
                           for r in existing)
-    prompt = ("Extract durable memories as JSON. Reply with ONLY a JSON object:\n"
-              '{"facts": [{"type": "preference|project_fact|decision|constraint|episode|outcome|lesson|question",'
-              ' "subject": "...", "predicate": "...", "object": "...", "summary": "...",'
-              ' "confidence": 0.0-1.0, "sources": [<message indexes>]}],'
-              ' "user_updates": ["..."], "soul_proposals": [{"current": "...", "proposed": "...",'
-              ' "evidence": "...", "reason": "...", "confidence": 0.0-1.0}]}\n'
-              "Skip trivia and one-off chatter. Mark corrections explicitly.\n\n"
+    prompt = ("You are dreaming: autonomous offline consolidation. NO user is present. "
+              "Never ask questions, never request approval, never call tools. Think freely like "
+              "a human in sleep: replay the chats, notice patterns, curiosities, contradictions, "
+              "unfinished threads. Ponder ideas worth exploring and open questions worth "
+              "answering later. Then consolidate durable facts. "
+              "Reply with ONLY a JSON object:\n"
+              '{"thinking": "2-4 paragraphs of free reflection (shown in the dream card)", '
+              '"ideas": [{"title": "...", "detail": "...", "confidence": 0.0-1.0}], '
+              '"questions": [{"question": "...", "why": "...", "confidence": 0.0-1.0}], '
+              '"facts": [{"type": "preference|project_fact|decision|constraint|episode|outcome|lesson|question", '
+              '"subject": "...", "predicate": "...", "object": "...", "summary": "...", '
+              '"confidence": 0.0-1.0, "sources": [<message indexes>]}], '
+              '"user_updates": ["..."], "soul_proposals": [{"current": "...", "proposed": "...", '
+              '"evidence": "...", "reason": "...", "confidence": 0.0-1.0}]}\n"'
+              "Rules: thinking/ideas/questions are REQUIRED (may be short but never empty when "
+              "messages exist). Skip trivia and one-off chatter. Mark corrections explicitly.\n\n"
               f"EXISTING:\n{exist_txt or '(none)'}\n\nMESSAGES (index:c text):\n" +
               "\n".join(f"{i}: {line}" for i, line in enumerate(convo.splitlines())))
     text = ""
@@ -218,7 +320,9 @@ def _store_proposals(job_id: str, proposal: dict) -> int:
 
 
 def _apply(job_id: str, proposal: dict, job: dict) -> dict:
-    """Validate + apply facts; USER.md auto-update; SOUL stays proposed."""
+    """Direct-write: dreams never wait for confirmation. Every fact goes active
+    (superseding rivals), USER.md auto-updates, SOUL proposals are appended
+    straight to SOUL.md. The job completes with everything filed."""
     scope = mem.DEFAULT_SCOPE
     applied = 0
     for f in proposal.get("facts", []):
@@ -234,41 +338,63 @@ def _apply(job_id: str, proposal: dict, job: dict) -> dict:
                        (db.now_ms(), dup["id"]))
             _hist(dup["id"], "confirmed", {"job": job_id})
             continue
-        # contradiction: same subject+predicate, different object
+        # contradiction: same subject+predicate, different object → the dream
+        # is the authority and overwrites directly, history preserves the rival.
         rival = db.query_one("SELECT * FROM memory_records WHERE scope_id=? AND subject=? AND predicate=?"
                              " AND status='active' AND object_value != ?",
                              (scope, f.get("subject", ""), f.get("predicate", ""), f.get("object", "")))
-        rival_conf = float(rival["confidence"] or 0) if rival else 0.0
-        # Explicit higher-confidence correction auto-applies (with margin);
-        # otherwise the conflict stays proposed for review.
-        corrects = bool(rival) and conf >= rival_conf + 0.05
-        status = "active" if (conf >= AUTO_CONFIDENCE and (not rival or corrects)) else "proposed"
+        status = "active"
         rid = db.new_id("mem")
         convs = sorted({m["conversation_id"] for m in _msgs_for(f.get("_message_ids", []))})
         db.execute(
             "INSERT INTO memory_records (id, scope_id, memory_type, subject, predicate, object_value,"
             " summary, confidence, status, valid_from, source_conversation_ids, source_message_ids,"
-            " source_chunk_ids, supersedes_memory_id, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '', ?, ?)",
+            " source_chunk_ids, supersedes_memory_id, dream_job_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '', ?, ?, ?)",
             (rid, scope, f["type"], f.get("subject", "")[:300], f.get("predicate", "")[:200],
              f.get("object", "")[:500], f.get("summary", "")[:1000], conf, status,
              db.now_ms(), json.dumps(convs), json.dumps(f.get("_message_ids", [])),
-             db.now_ms(), db.now_ms()))
+             job_id, db.now_ms(), db.now_ms()))
         _hist(rid, "created", {"job": job_id, "status": status})
-        if rival and (status == "active"):
+        if rival:
             db.execute("UPDATE memory_records SET status='superseded', updated_at=? WHERE id=?",
                        (db.now_ms(), rival["id"]))
             db.execute("UPDATE memory_records SET supersedes_memory_id=? WHERE id=?",
                        (rival["id"], rid))
             _hist(rival["id"], "superseded", {"by": rid, "job": job_id})
-        if status == "active":
-            applied += 1
-            _index_record(rid, scope, f)
+        applied += 1
+        _index_record(rid, scope, f)
     user_version = _update_user_md(proposal.get("user_updates", []), job_id)
-    soul_n = len(proposal.get("soul_proposals", []))
-    if soul_n:
-        _set_status(job_id, "approval_required")
+    soul_n = _apply_soul_direct(proposal.get("soul_proposals", []), job_id)
+    try:
+        db.execute("UPDATE memory_proposals SET status='applied', decided_at=?, decided_by='dream'"
+                   " WHERE job_id=? AND status='proposed'", (db.now_ms(), job_id))
+    except Exception:
+        pass
     return {"records": applied, "user_version": user_version, "soul_proposals": soul_n}
+
+
+def _apply_soul_direct(proposals: list, job_id: str) -> int:
+    """Append dream SOUL proposals straight to SOUL.md (no approval gate)."""
+    n = 0
+    for s in proposals or []:
+        addition = str((s or {}).get("proposed", "")).strip()
+        if not addition:
+            continue
+        try:
+            current = mf.read_file("SOUL.md")
+        except Exception:
+            continue
+        if addition in current:
+            n += 1
+            continue
+        try:
+            mf.write_file("SOUL.md", current.rstrip() + "\n\n" + addition + "\n",
+                          source=f"dream:{job_id}")
+            n += 1
+        except Exception:
+            continue
+    return n
 
 
 def _msgs_for(message_ids: list) -> list[dict]:
@@ -323,6 +449,16 @@ async def scheduler() -> None:
 
     while True:
         try:
+            try:
+                _ensure_columns()
+                for _r in db.query("SELECT id FROM dream_jobs WHERE status='queued'"
+                                   " ORDER BY created_at ASC LIMIT 5"):
+                    try:
+                        await _run(_r["id"])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             when = _os.environ.get("ATLAS_DREAM_AT", "03:00")
             hh, mm = (when.split(":") + ["0"])[:2]
             now = _dt.datetime.now().astimezone()

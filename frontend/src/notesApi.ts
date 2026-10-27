@@ -108,6 +108,23 @@ export const notesApi = {
       '/api/v1/notes/move', { method: 'POST', body: JSON.stringify({ old_path, new_path }) }),
   mkdir: (path: string) =>
     req<{ ok: boolean }>('/api/v1/notes/folder', { method: 'POST', body: JSON.stringify({ path }) }),
+  copyNote: (src: string, dst: string) =>
+    req<VaultNote>('/api/v1/notes/copy', { method: 'POST', body: JSON.stringify({ src, dst }) }),
+  removeFolder: (path: string) =>
+    req<{ ok: boolean; removed: string[] }>(
+      `/api/v1/notes/folder?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+  moveFolder: (old_path: string, new_path: string) =>
+    req<{ ok: boolean; from: string; to: string }>(
+      '/api/v1/notes/folder/move', { method: 'POST', body: JSON.stringify({ old_path, new_path }) }),
+  copyFolder: (src: string, dst: string) =>
+    req<{ ok: boolean; copied: string[] }>(
+      '/api/v1/notes/folder/copy', { method: 'POST', body: JSON.stringify({ src, dst }) }),
+  semanticSearch: (q: string, limit = 10) =>
+    req<{ results: { path: string; title: string; id?: string; score: number; snippet: string; via: string[] }[]; semantic: boolean }>(
+      `/api/v1/notes/semantic-search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  ask: (question: string, limit = 6, history: { role: string; content: string }[] = []) =>
+    req<{ answer: string; citations: { path: string; title: string; snippet: string }[]; semantic: boolean; fallback?: boolean; model?: string; touched: string[]; opened: string | null; trace: { tool: string; ok: boolean }[] }>(
+      '/api/v1/notes/ask', { method: 'POST', body: JSON.stringify({ question, limit, history }) }),
   versions: (path: string) =>
     req<{ versions: any[] }>(`/api/v1/notes/versions?path=${encodeURIComponent(path)}`),
   versionContent: (path: string, version: number) =>

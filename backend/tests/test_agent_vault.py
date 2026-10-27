@@ -85,3 +85,25 @@ def test_agent_drives_vault_write_with_version(client, tmp_env, monkeypatch):
             assert "version 2" in str(exc)
 
     asyncio.run(main())
+
+
+def test_confirmed_wipe_scope_forces_bulk_delete(tmp_env):
+    """Blanket 'yes, delete all' → forced bulk_delete message with exact scope."""
+    from app.services.agent import _confirmed_wipe_scope
+    from app.services import tasks as _t
+    from app.services import vault as _v
+
+    _v.create_note("Gone.md", "# gone\n")
+    _t.create_task("gone task")
+
+    msg = _confirmed_wipe_scope(
+        "Permanently delete all 6 notes and 5 tasks? This cannot be undone.",
+        "Yes, delete all 6 notes and 5 tasks")
+    assert msg is not None
+    assert "bulk_delete" in msg
+    assert "Gone.md" in msg
+
+    # Non-wipe questions and non-affirmative answers → None.
+    assert _confirmed_wipe_scope("What is for lunch?", "yes") is None
+    assert _confirmed_wipe_scope("Delete all notes?", "no, keep them") is None
+    assert _confirmed_wipe_scope("Delete all notes?", "let me think") is None

@@ -21,6 +21,11 @@ from .. import config
 from . import webtools
 from .noteagent import NOTETASK_TOOL_SCHEMAS
 
+try:
+    from .jira.tools import JIRA_TOOL_SCHEMAS as _JIRA_SCHEMAS
+except Exception:
+    _JIRA_SCHEMAS = []
+
 TOOL_SCHEMAS = [
     {
         "name": "fs_list",
@@ -102,7 +107,7 @@ TOOL_SCHEMAS = [
         "description": "Read one consolidated memory record by id.",
         "parameters": {"memory_id": "record id"},
     },
-] + webtools.WEB_TOOL_SCHEMAS + NOTETASK_TOOL_SCHEMAS
+] + webtools.WEB_TOOL_SCHEMAS + NOTETASK_TOOL_SCHEMAS + _JIRA_SCHEMAS
 
 DESTRUCTIVE_PATTERNS = re.compile(
     r"(rm\s+-rf|rmdir\s+/s|del\s+/[fs]|format\s+[a-z]:|mkfs|shutdown|reboot|:?\(\)\s*\{)",
@@ -165,6 +170,22 @@ def resolve(root: Path, rel: str) -> Path:
     return p
 
 
+def _bulk_scope(args: dict) -> list[str]:
+    """Flatten bulk_delete scope for approval text (tolerates JSON strings)."""
+    out: list[str] = []
+    for k in ("note_paths", "task_ids"):
+        v = (args or {}).get(k)
+        if isinstance(v, list):
+            out.extend(str(x) for x in v)
+        elif isinstance(v, str) and v.strip():
+            try:
+                parsed = json.loads(v)
+                out.extend(str(x) for x in parsed) if isinstance(parsed, list) else out.append(v)
+            except Exception:
+                out.append(v)
+    return out
+
+
 def summarize_tool(name: str, args: dict) -> str:
     if name == "shell_exec":
         return f"Run `{str(args.get('command', ''))[:120]}`"
@@ -196,8 +217,19 @@ def summarize_tool(name: str, args: dict) -> str:
         return f"{name}"
     if name in ("note_read", "note_create", "note_search", "note_list", "task_get", "task_list"):
         return f"{name} `{str(args.get('path', args.get('query', args.get('task_id', ''))))[:100]}`"
-    if name in ("note_write", "task_create", "task_update", "task_transition", "reminder_create"):
+    if name == "bulk_delete":
+        scope = _bulk_scope(args)
+        return f"Delete {len(scope)} items permanently" + (
+            f" `{scope[0][:60]}`…" if scope else "")
+    if name in ("note_write", "note_delete", "task_create", "task_update",
+                "task_transition", "task_delete", "reminder_create"):
         return f"{name} `{str(args.get('path', args.get('title', args.get('task_id', ''))))[:100]}`"
+    if name.startswith("jira_"):
+        try:
+            from .jira.tools import jira_summary as _js
+            return _js(name, args)
+        except Exception:
+            return name
     return name
 
 
@@ -210,6 +242,14 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
                 "get_conversation_context", "get_memory_report", "get_memory_record",
                 "note_read", "note_search", "note_list", "task_get", "task_list"):
         return False, ""  # read-only retrieval
+    if name in ("note_delete", "task_delete", "bulk_delete"):
+        # Destructive vault/task deletes always need explicit approval,
+        # regardless of the auto-approve setting (there is no trash/undo).
+        if name == "bulk_delete":
+            n = len(_bulk_scope(args))
+            return True, (f"Permanently delete {n} item(s) (no trash/undo)."
+                          if n else "Bulk delete requires approval.")
+        return True, f"{name} permanently deletes data and requires approval."
     if name in ("note_create", "note_write", "task_create", "task_update",
                 "task_transition", "reminder_create"):
         # Vault/task writes: follow the workspace auto-approve policy; the
@@ -229,6 +269,17 @@ def needs_approval(name: str, args: dict, auto_approve: bool) -> tuple[bool, str
         return (not auto_approve), ("" if auto_approve else "Shell execution requires approval.")
     if name in ("fs_write", "fs_edit", "git_clone"):
         return (not auto_approve), ("" if auto_approve else "Workspace write requires approval.")
+    if name.startswith("jira_"):
+        try:
+            from .jira.tools import jira_needs_approval as _jna
+            from .jira.service import get_connection as _gc
+            try:
+                _conn = _gc()
+            except Exception:
+                _conn = None
+            return _jna(name, args, auto_approve, _conn)
+        except Exception:
+            return True, "Jira tool requires approval."
     return True, f"Unknown tool '{name}' requires approval."
 
 
@@ -247,8 +298,9 @@ async def run_tool(name: str, args: dict, root: Path, execution_id: str = "") ->
             name = "get_memory_record"
         return await _memtools.run_memory_tool(name, args, scope)
     if name in ("note_read", "note_create", "note_search", "note_list",
-                  "note_write", "task_create", "task_list", "task_get",
-                  "task_update", "task_transition", "reminder_create"):
+                  "note_write", "note_delete", "task_create", "task_list", "task_get",
+                  "task_update", "task_transition", "task_delete", "bulk_delete",
+                  "reminder_create"):
         from . import noteagent as _na
         from . import memory as _scope_of
         try:
@@ -256,6 +308,14 @@ async def run_tool(name: str, args: dict, root: Path, execution_id: str = "") ->
         except Exception:
             scope = "user:default"
         return await _na.run_notetask_tool(name, args, scope, execution_id)
+    if name.startswith("jira_"):
+        from .jira.tools import run_jira_tool as _rj
+        try:
+            scope = root.name
+        except Exception:
+            scope = ""
+        return await _rj(name, args, execution_id=execution_id,
+                         conversation_id=scope)
     try:
         if name == "fs_list":
             target = resolve(root, str(args.get("path", ".")))
